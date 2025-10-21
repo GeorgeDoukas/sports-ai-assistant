@@ -1,0 +1,6 @@
+langchain
+langchain-ollama
+langchain-openai
+feedparser
+requests
+python-dotenv
