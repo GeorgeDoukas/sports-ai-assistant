@@ -1,2 +1,5 @@
-# bet-suggester
-Bet Suggester is locally-run Python tool that uses a local LLM (via Ollama) to analyze sports news betting odds to generate reasoned betting suggestions.
+# Bet Suggester
+
+Bet Suggester is a locally-run betting assistant that uses a **local LLM** to analyze **sports news** and **odds** and propose **reasoned betting suggestions** for Greek and international markets.
+
+> ⚠️ **For informational purposes only. Gambling involves significant risk. Bet responsibly.**
