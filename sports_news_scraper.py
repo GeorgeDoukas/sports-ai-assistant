@@ -18,6 +18,13 @@ from requests.packages.urllib3.exceptions import InsecureRequestWarning
 # ===========================================================
 load_dotenv()
 
+COMPETITION_MAPPING = {
+    "nba": "basketball",
+    "euroleague": "basketball",
+    "champions-league": "football",
+    "superleague": "football",
+}
+
 if os.getenv("VERIFY_SSL", "false").lower() != "true":
     requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
@@ -42,6 +49,7 @@ DELAY_MAX = float(os.getenv("DELAY_MAX", "4"))
 # ===========================================================
 SOURCES_FILE = os.getenv("SOURCES_FILE", ".env")
 
+
 def load_sources():
     """Reads the sources.env file into a list of source configs."""
     parser = configparser.ConfigParser()
@@ -50,9 +58,14 @@ def load_sources():
     sources = []
     for section in parser.sections():
         name = parser.get(section, "NAME", fallback=section)
-        urls = [u.strip() for u in parser.get(section, "URLS", fallback="").split(",") if u.strip()]
+        competition_urls = [
+            (competition_url.split("@")[0], competition_url.split("@")[1].rstrip("/"))
+            for competition_url in parser.get(
+                section, "COMPETITION_URLS", fallback=""
+            ).split(",")
+        ]
         separator_str = str(parser.get(section, "DATETIME_SEPARATOR", fallback=None))
-        separator = separator_str.replace('"', '')
+        separator = separator_str.replace('"', "")
         selectors = {
             "list": parser.get(section, "LIST", fallback=None),
             "title": parser.get(section, "TITLE", fallback=None),
@@ -61,18 +74,15 @@ def load_sources():
             "datetime_separator": separator,
             "content": parser.get(section, "CONTENT", fallback=None),
         }
-        sources.append({"name": name, "urls": urls, "selectors": selectors})
+        sources.append(
+            {"name": name, "competition_urls": competition_urls, "selectors": selectors}
+        )
     return sources
 
 
 # ===========================================================
 # Helpers
 # ===========================================================
-def extract_path_parts(url: str):
-    parts = [p for p in urlparse(url).path.strip("/").split("/") if p]
-    sport = parts[0] if len(parts) > 0 else "unknown"
-    competition = parts[1] if len(parts) > 1 else "unknown"
-    return sport, competition
 
 
 def clean_html_text(element):
@@ -96,32 +106,34 @@ def list_article_files(sport: str, competition: str):
 # ===========================================================
 def scrape_article_page(article_url: str, selectors: dict):
     print(f"   📰 Fetching: {article_url}")
-    # try:
-    res = requests.get(article_url, headers=HEADERS, timeout=REQUEST_TIMEOUT, verify=VERIFY_SSL)
-    res.raise_for_status()
-    soup = BeautifulSoup(res.text, "lxml")
+    try:
+        res = requests.get(
+            article_url, headers=HEADERS, timeout=REQUEST_TIMEOUT, verify=VERIFY_SSL
+        )
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, "lxml")
 
-    title = clean_html_text(soup.select_one(selectors.get("title")))
-    author = clean_html_text(soup.select_one(selectors.get("author")))
-    date = clean_html_text(soup.select_one(selectors.get("date")))
-    date_published = date.split(selectors.get("datetime_separator"))[0]
-    content = clean_html_text(soup.select_one(selectors.get("content")))
+        title = clean_html_text(soup.select_one(selectors.get("title")))
+        author = clean_html_text(soup.select_one(selectors.get("author")))
+        date = clean_html_text(soup.select_one(selectors.get("date")))
+        date_published = date.split(selectors.get("datetime_separator"))[0]
+        content = clean_html_text(soup.select_one(selectors.get("content")))
 
-    if not content.strip():
-        print("   ⚠️ Empty content, skipping.")
+        if not content.strip():
+            print("   ⚠️ Empty content, skipping.")
+            return None
+
+        return {
+            "title": title,
+            "author": author,
+            "date_published": date_published,
+            "content": content,
+            "url": article_url,
+        }
+
+    except Exception as e:
+        print(f"   ❌ Error fetching article: {e}")
         return None
-
-    return {
-        "title": title,
-        "author": author,
-        "date_published": date_published,
-        "content": content,
-        "url": article_url,
-    }
-
-    # except Exception as e:
-    #     print(f"   ❌ Error fetching article: {e}")
-    #     return None
 
 
 def save_article(article: dict, source: str, sport: str, competition: str):
@@ -150,13 +162,17 @@ def scrape_source(source: dict):
     name = source["name"]
     print(f"\n📡 Scraping source: {name}")
 
-    for main_url in source["urls"]:
-        sport, competition = extract_path_parts(main_url)
+    for competition_url in source["competition_urls"]:
+        competition = competition_url[0]
+        sport = COMPETITION_MAPPING.get(competition, "unknown")
+        main_url = competition_url[1]
         print(f"\n🔍 {sport}/{competition}: {main_url}")
 
         existing = list_article_files(sport, competition)
         try:
-            res = requests.get(main_url, headers=HEADERS, timeout=REQUEST_TIMEOUT, verify=VERIFY_SSL)
+            res = requests.get(
+                main_url, headers=HEADERS, timeout=REQUEST_TIMEOUT, verify=VERIFY_SSL
+            )
             res.raise_for_status()
         except Exception as e:
             print(f"❌ Failed to fetch {main_url}: {e}")
@@ -164,7 +180,11 @@ def scrape_source(source: dict):
 
         soup = BeautifulSoup(res.text, "lxml")
         link_selector = source["selectors"].get("list")
-        article_links = [urljoin(main_url, a["href"]) for a in soup.select(link_selector) if a.get("href")]
+        article_links = [
+            urljoin(main_url, a["href"])
+            for a in soup.select(link_selector)
+            if a.get("href")
+        ]
 
         print(f"   Found {len(article_links)} links")
 
