@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 import configparser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from bs4 import BeautifulSoup
@@ -162,26 +163,28 @@ def scrape_source(source: dict):
     name = source["name"]
     print(f"\n📡 Scraping source: {name}")
 
-    for competition_url in source["competition_urls"]:
-        competition = competition_url[0]
+    for competition, url in source["competition_urls"]:
         sport = COMPETITION_MAPPING.get(competition, "unknown")
-        main_url = competition_url[1]
-        print(f"\n🔍 {sport}/{competition}: {main_url}")
+        print(f"\n🔍 {sport}/{competition}: {url}")
 
         existing = list_article_files(sport, competition)
         try:
             res = requests.get(
-                main_url, headers=HEADERS, timeout=REQUEST_TIMEOUT, verify=VERIFY_SSL
+                url, headers=HEADERS, timeout=REQUEST_TIMEOUT, verify=VERIFY_SSL
             )
             res.raise_for_status()
         except Exception as e:
-            print(f"❌ Failed to fetch {main_url}: {e}")
+            print(f"❌ Failed to fetch {url}: {e}")
             continue
 
         soup = BeautifulSoup(res.text, "lxml")
         link_selector = source["selectors"].get("list")
+        if not link_selector:
+            print(f"   ⚠️ No 'list' selector found for source {name}, skipping competition {competition}.")
+            continue
+            
         article_links = [
-            urljoin(main_url, a["href"])
+            urljoin(url, a["href"])
             for a in soup.select(link_selector)
             if a.get("href")
         ]
@@ -212,7 +215,18 @@ if __name__ == "__main__":
         print("❌ No sources found in config file.")
         exit(1)
 
-    for src in sources:
-        scrape_source(src)
+    print(f"🚀 Starting scraping for {len(sources)} sources in parallel...")
+    with ThreadPoolExecutor() as executor:
+        # Submit all source scraping tasks
+        future_to_source = {executor.submit(scrape_source, src): src for src in sources}
+        
+        # As each task completes, print a message
+        for future in as_completed(future_to_source):
+            source = future_to_source[future]
+            try:
+                future.result() # This will re-raise any exception from the task
+                print(f"✅ Source '{source['name']}' completed successfully.")
+            except Exception as e:
+                print(f"❌ Source '{source['name']}' encountered an error: {e}")
 
     print("\n✅ All sources scraped successfully.")
