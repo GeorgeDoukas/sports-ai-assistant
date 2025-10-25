@@ -1,163 +1,235 @@
-# vector_store.py
+import argparse
+import json
+import os
+import shutil
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import List, Optional, Set, Dict, Any
+
+from dotenv import load_dotenv
+from langchain_text_splitters import RecursiveCharacterTextSplitter # CORRECTED IMPORT
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_ollama import OllamaEmbeddings
-from pathlib import Path
-import json
-from datetime import datetime, timedelta
 
-VECTOR_DIR = "data/vectorstore/faiss"
-RAW_DIR = Path("data/raw")
+# ===========================================================
+# Load environment & Configuration
+# ===========================================================
+load_dotenv()
 
+VECTOR_DIR = Path(os.getenv("VECTOR_DIR", "data/vectorstore/faiss"))
+RAW_DIR = Path(os.getenv("RAW_NEWS_DATA_DIR", "data/raw/news"))
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 1000))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 150))
+BATCH_SIZE = 32 # Number of documents to process in a batch
 
-def load_raw_news_from_sources(sources=None, days_back=30):
-    """Load all article JSONs from data/raw/** recursively."""
-    cutoff = datetime.now() - timedelta(days=days_back)
-    docs = []
-
-    for file in RAW_DIR.rglob("*.json"):
-        try:
-            with open(file, encoding="utf-8") as f:
-                data = json.load(f)
-
-            article = data.get("article", {})
-            if not article:
-                continue
-
-            source = data.get("source", "unknown")
-            competition = data.get("competition", "unknown")
-            scraped_at = data.get("scraped_at", None)
-
-            if scraped_at:
-                try:
-                    scraped_date = datetime.fromisoformat(scraped_at)
-                    if scraped_date < cutoff:
-                        continue
-                except Exception:
-                    pass
-
-            if sources and source not in sources:
-                continue
-
-            title = article.get("title", "")
-            content = article.get("content", "")
-            if not content.strip():
-                continue
-
-            full_text = f"{title}\n\n{content}".strip()
-            doc = Document(
-                page_content=full_text,
-                metadata={
-                    "title": title,
-                    "author": article.get("author", ""),
-                    "published": article.get("date_published", ""),
-                    "url": article.get("url", ""),
-                    "competition": competition,
-                    "source": source,
-                    "scraped_at": scraped_at,
-                    "file": str(file),
-                },
-            )
-            docs.append(doc)
-
-        except Exception as e:
-            print(f"⚠️ Skip {file}: {e}")
-
-    print(f"📚 Loaded {len(docs)} articles into memory.")
-    return docs
+PROCESSED_FILES_LOG = VECTOR_DIR / "processed_files.log"
 
 
-def load_vectorstore():
-    """Load FAISS vector store from local disk, if it exists."""
-    embeddings = OllamaEmbeddings(model="nomic-embed-text")
-    try:
-        return FAISS.load_local(VECTOR_DIR, embeddings, allow_dangerous_deserialization=True)
-    except Exception:
-        print("ℹ️ No existing vector store found, creating new one.")
-        return None
-
-
-def create_or_update_vectorstore(sources=None, days_back=30):
+class VectorStoreManager:
     """
-    Incrementally build or update the FAISS vector store.
-
-    Only new article files (not yet embedded) are added.
+    Manages the creation, updating, and querying of the FAISS vector store.
     """
-    embeddings = OllamaEmbeddings(model="nomic-embed-text")
-    vectorstore = load_vectorstore()
-
-    # Load existing file paths to skip
-    existing_files = set()
-    if vectorstore and hasattr(vectorstore, "docstore"):
-        for _, doc in vectorstore.docstore._dict.items():
-            if "file" in doc.metadata:
-                existing_files.add(doc.metadata["file"])
-
-    all_docs = load_raw_news_from_sources(sources, days_back)
-    new_docs = [doc for doc in all_docs if doc.metadata["file"] not in existing_files]
-
-    if not new_docs:
-        print("✅ No new documents found. Vectorstore is up to date.")
-        return vectorstore
-
-    print(f"🆕 Found {len(new_docs)} new documents to embed...")
-
-    if vectorstore:
-        vectorstore.add_documents(new_docs)
-    else:
-        vectorstore = FAISS.from_documents(new_docs, embeddings)
-
-    Path(VECTOR_DIR).mkdir(parents=True, exist_ok=True)
-    vectorstore.save_local(VECTOR_DIR)
-    print(f"✅ Vectorstore updated (total {len(all_docs)} docs).")
-    return vectorstore
+    def __init__(self):
+        self.vector_store: Optional[FAISS] = None
+        self.embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=CHUNK_SIZE,
+            chunk_overlap=CHUNK_OVERLAP,
+            length_function=len,
+        )
+        VECTOR_DIR.mkdir(parents=True, exist_ok=True)
+        print(f"✅ Initialized VectorStoreManager with model '{EMBEDDING_MODEL}'.")
+        print(f"   Chunk size: {CHUNK_SIZE}, Overlap: {CHUNK_OVERLAP}")
 
 
-def query_vectorstore(query: str, k: int = 5, include_content: bool = False):
-    """
-    Search the FAISS index for the most relevant articles.
+    def _load_processed_files(self) -> Set[Path]:
+        """Loads the set of already processed file paths from a log file."""
+        if not PROCESSED_FILES_LOG.exists():
+            return set()
+        with open(PROCESSED_FILES_LOG, "r", encoding="utf-8") as f:
+            return {Path(line.strip()) for line in f if line.strip()}
 
-    Args:
-        query (str): The search query
-        k (int): Number of top results
-        include_content (bool): Whether to include full text content in results
 
-    Returns:
-        list[dict]: List of search results with metadata and optional content
-    """
-    vectorstore = load_vectorstore()
-    if not vectorstore:
-        print("❌ No vector store found. Run create_or_update_vectorstore() first.")
-        return []
+    def _save_processed_files(self, processed_files: Set[Path]) -> None:
+        """Saves the set of processed file paths to a log file."""
+        with open(PROCESSED_FILES_LOG, "w", encoding="utf-8") as f:
+            for file_path in sorted(processed_files):
+                f.write(f"{file_path}\n")
 
-    results = vectorstore.similarity_search_with_score(query, k=k)
-    formatted = []
 
-    for doc, score in results:
-        item = {
-            "title": doc.metadata.get("title", ""),
-            "competition": doc.metadata.get("competition", ""),
-            "author": doc.metadata.get("author", ""),
-            "published": doc.metadata.get("published", ""),
-            "source": doc.metadata.get("source", ""),
-            "url": doc.metadata.get("url", ""),
-            "score": score,
-        }
-        if include_content:
-            item["content"] = doc.page_content
-        formatted.append(item)
+    def _load_and_chunk_documents(self, days_back: int) -> List[Document]:
+        """Loads new JSON files and splits them into chunked Documents."""
+        processed_files = self._load_processed_files()
+        new_chunks = []
+        cutoff_date = datetime.now() - timedelta(days=days_back)
 
-    print(f"🔍 Found {len(formatted)} results for query: '{query}'")
-    for r in formatted:
-        print(f" - {r['title']} ({r['competition']}) [{r['score']:.4f}]")
+        if not RAW_DIR.exists():
+            print(f"❌ Raw data directory not found at: {RAW_DIR}")
+            return []
 
-    return formatted
+        all_files = list(RAW_DIR.rglob("*.json"))
+        new_files = [
+            f for f in all_files
+            if f not in processed_files and datetime.fromtimestamp(f.stat().st_mtime) >= cutoff_date
+        ]
 
+        if not new_files:
+            return []
+
+        print(f"ℹ️ Found {len(new_files)} new raw files to process.")
+
+        for file_path in new_files:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                article = data.get("article")
+                if not article or not article.get("content", "").strip():
+                    print(f"⚠️ Skipping empty article: {file_path}")
+                    continue
+
+                # Create a single document to be split
+                doc = Document(
+                    page_content=article.get("content"),
+                    metadata={
+                        "source": data.get("source", "unknown"),
+                        "sport": data.get("sport", "unknown"),
+                        "competition": data.get("competition", "unknown"),
+                        "title": article.get("title", "No Title"),
+                        "url": article.get("url", ""),
+                        "published_date": article.get("date_published", ""),
+                        "file_path": str(file_path)
+                    }
+                )
+                # Add the title to the beginning of the content for better context
+                doc.page_content = f"Article Title: {doc.metadata['title']}\n\n{doc.page_content}"
+
+                # Split the document into chunks
+                chunks = self.text_splitter.split_documents([doc])
+                new_chunks.extend(chunks)
+
+            except Exception as e:
+                print(f"❌ Error processing file {file_path}: {e}")
+
+        print(f"📚 Generated {len(new_chunks)} new chunks from {len(new_files)} files.")
+        return new_chunks
+
+    def create_or_update(self, days_back: int = 30) -> None:
+        """Creates or updates the vector store with new documents."""
+        new_chunks = self._load_and_chunk_documents(days_back)
+
+        if not new_chunks:
+            print("✅ Vector store is already up to date.")
+            return
+
+        print("🔄 Loading existing vector store...")
+        self.load()
+
+        # Add new documents in batches
+        for i in range(0, len(new_chunks), BATCH_SIZE):
+            batch = new_chunks[i:i + BATCH_SIZE]
+            if self.vector_store:
+                self.vector_store.add_documents(batch)
+            else:
+                self.vector_store = FAISS.from_documents(batch, self.embeddings)
+            print(f"  ...embedded batch {i//BATCH_SIZE + 1}/{(len(new_chunks) - 1)//BATCH_SIZE + 1}")
+
+        print("💾 Saving updated vector store to disk...")
+        self.vector_store.save_local(str(VECTOR_DIR))
+
+        # Update the processed files log
+        processed_files = self._load_processed_files()
+        newly_processed_files = {Path(chunk.metadata["file_path"]) for chunk in new_chunks}
+        processed_files.update(newly_processed_files)
+        self._save_processed_files(processed_files)
+        print("✅ Vector store update complete.")
+
+    def load(self) -> None:
+        """Loads the FAISS index from disk."""
+        if self.vector_store:
+            return
+        if VECTOR_DIR.exists() and any(VECTOR_DIR.iterdir()): # CORRECTED TYPO
+            try:
+                print(f"ℹ️ Loading vector store from {VECTOR_DIR}...")
+                self.vector_store = FAISS.load_local(
+                    str(VECTOR_DIR), self.embeddings, allow_dangerous_deserialization=True
+                )
+            except Exception as e:
+                print(f"❌ Could not load vector store: {e}")
+                self.vector_store = None
+        else:
+            print("ℹ️ No existing vector store found.")
+            self.vector_store = None
+
+    def query(self, query_text: str, k: int = 5, filters: Optional[Dict] = None) -> List[Dict[str, Any]]:
+        """Queries the vector store for the most relevant chunks."""
+        self.load()
+        if not self.vector_store:
+            print("❌ Vector store is not available. Cannot query.")
+            return []
+
+        results_with_scores = self.vector_store.similarity_search_with_score(query_text, k=k, filter=filters)
+
+        formatted_results = []
+        for doc, score in results_with_scores:
+            result = {
+                "score": score,
+                "content": doc.page_content,
+                "metadata": doc.metadata
+            }
+            formatted_results.append(result)
+
+        print(f"🔍 Found {len(formatted_results)} results for your query.")
+        return formatted_results
+
+    def clear(self) -> None:
+        """Deletes the vector store and processed files log."""
+        if VECTOR_DIR.exists():
+            shutil.rmtree(VECTOR_DIR)
+            print(f"🗑️ Deleted vector store directory: {VECTOR_DIR}")
+        if PROCESSED_FILES_LOG.exists():
+            PROCESSED_FILES_LOG.unlink()
+            print(f"🗑️ Deleted processed files log: {PROCESSED_FILES_LOG}")
+        print("✨ Cleared all existing data. Ready for a fresh start.")
+
+
+# ===========================================================
+# Main Execution
+# ===========================================================
 
 if __name__ == "__main__":
-    # 1️⃣ Build or incrementally update FAISS store
-    create_or_update_vectorstore()
+    parser = argparse.ArgumentParser(description="Manage the sports news vector store.")
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Force a rebuild by deleting the existing vector store and logs.",
+    )
+    args = parser.parse_args()
 
-    # 2️⃣ Query it
-    results = query_vectorstore("Ανάληση για Euroleague", include_content=True)
-    print("\n🧾 Example result snippet:\n", results[0]["content"][:300] if results else "No results")
+    manager = VectorStoreManager()
+
+    if args.rebuild:
+        manager.clear()
+
+    # 1. Create or update the vector store
+    manager.create_or_update(days_back=30)
+
+    # 2. Example query
+    print("\n" + "="*50)
+    print("🚀 Running an example query...")
+    print("="*50)
+
+    query = "Ποια ομάδα είχε προβλήματα στην άμυνα στα τελευταία παιχνίδια;"
+    search_results = manager.query(query, k=3)
+
+    if search_results:
+        for i, result in enumerate(search_results):
+            print(f"\n--- Result {i+1} (Score: {result['score']:.4f}) ---")
+            print(f"  Title: {result['metadata'].get('title', 'N/A')}")
+            print(f"  Source: {result['metadata'].get('source', 'N/A')}")
+            print(f"  URL: {result['metadata'].get('url', 'N/A')}")
+            print(f"  Content Snippet: {result['content'][:300].strip()}...")
+    else:
+        print("\n🤷 No results found for the example query.")
