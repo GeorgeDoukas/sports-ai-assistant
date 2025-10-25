@@ -1,6 +1,10 @@
-langchain
-langchain-ollama
-langchain-openai
-feedparser
-requests
-python-dotenv
+beautifulsoup4==4.14.2
+faiss-cpu==1.12.0
+langchain==1.0.1
+langchain-community==0.4
+langchain-ollama==1.0.0
+langchain-openai==1.0.0
+lxml==6.0.2
+pandas==2.3.3
+python-dotenv==1.1.1
+requests==2.32.5
