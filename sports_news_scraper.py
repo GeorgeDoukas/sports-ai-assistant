@@ -1,17 +1,33 @@
-import os
-import time
+import configparser
 import json
+import os
 import random
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
-import configparser
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
+
+GREEK_MONTH_MAP = {
+    1: "Ιανουαρίου",
+    2: "Φεβρουαρίου",
+    3: "Μαρτίου",
+    4: "Απριλίου",
+    5: "Μαΐου",
+    6: "Ιουνίου",
+    7: "Ιουλίου",
+    8: "Αυγούστου",
+    9: "Σεπτεμβρίου",
+    10: "Οκτωβρίου",
+    11: "Νοεμβρίου",
+    12: "Δεκεμβρίου",
+}
 
 
 # ===========================================================
@@ -102,6 +118,45 @@ def list_article_files(sport: str, competition: str):
     return [f.name for f in base_path.rglob("*.json")]
 
 
+def normalize_and_format_date(date_string: str) -> str:
+    """
+    Parses various date formats (DD/MM/YYYY, MM/DD/YYYY with /.- separators),
+    standardizes them, and optionally translates to a target language.
+    """
+    try:
+        # Step 1: Split the date string by any common separator
+        parts = re.split(r"[/.-]", date_string.strip())
+        if len(parts) != 3:
+            # If it's not a recognizable structure, return original
+            return date_string
+
+        p1, p2, p3 = map(int, parts)
+
+        # Step 2: Intelligently determine the date format (DMY vs MDY)
+        # This heuristic assumes if a value > 12, it must be the day.
+        if p1 > 12:  # Format is likely Day/Month/Year
+            day, month, year = p1, p2, p3
+        elif p2 > 12:  # Format is likely Month/Day/Year
+            month, day, year = p1, p2, p3
+        else:
+            # Ambiguous (e.g., 04.05.2025). Assume Day/Month/Year as it's common in Greece/Europe.
+            day, month, year = p1, p2, p3
+
+        # Ensure year is four digits
+        if year < 2000:
+            year += 2000
+
+        # Step 3: Create a datetime object for validation and formatting
+        dt_obj = datetime(year, month, day)
+
+        # Step 4: Format the date based on the Greek language
+        return f"{dt_obj.day} {GREEK_MONTH_MAP[dt_obj.month]} {dt_obj.year}"
+
+    except (ValueError, IndexError, KeyError):
+        # If any parsing fails, return the original string to avoid crashing
+        return date_string
+
+
 # ===========================================================
 # Scraper Logic
 # ===========================================================
@@ -118,6 +173,7 @@ def scrape_article_page(article_url: str, selectors: dict):
         author = clean_html_text(soup.select_one(selectors.get("author")))
         date = clean_html_text(soup.select_one(selectors.get("date")))
         date_published = date.split(selectors.get("datetime_separator"))[0]
+        date_published = normalize_and_format_date(date_published)
         content = clean_html_text(soup.select_one(selectors.get("content")))
 
         if not content.strip():
@@ -180,20 +236,21 @@ def scrape_source(source: dict):
         soup = BeautifulSoup(res.text, "lxml")
         link_selector = source["selectors"].get("list")
         if not link_selector:
-            print(f"   ⚠️ No 'list' selector found for source {name}, skipping competition {competition}.")
+            print(
+                f"   ⚠️ No 'list' selector found for source {name}, skipping competition {competition}."
+            )
             continue
-            
+
         article_links = [
-            urljoin(url, a["href"])
-            for a in soup.select(link_selector)
-            if a.get("href")
+            urljoin(url, a["href"]) for a in soup.select(link_selector) if a.get("href")
         ]
 
         print(f"   Found {len(article_links)} links")
 
         for article_url in article_links:
+            article_url = article_url.rstrip("/")
             article_id = article_url.split("/")[-1]
-            if any(article_id in f for f in existing):
+            if article_id + ".json" in existing:
                 print(f"   ↪️ Already saved: {article_url}")
                 continue
 
@@ -219,12 +276,12 @@ if __name__ == "__main__":
     with ThreadPoolExecutor() as executor:
         # Submit all source scraping tasks
         future_to_source = {executor.submit(scrape_source, src): src for src in sources}
-        
+
         # As each task completes, print a message
         for future in as_completed(future_to_source):
             source = future_to_source[future]
             try:
-                future.result() # This will re-raise any exception from the task
+                future.result()  # This will re-raise any exception from the task
                 print(f"✅ Source '{source['name']}' completed successfully.")
             except Exception as e:
                 print(f"❌ Source '{source['name']}' encountered an error: {e}")
