@@ -4,9 +4,9 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from langchain_ollama import ChatOllama
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field
 
 from vector_store import VectorStoreManager
@@ -22,7 +22,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", "aya-expanse")
 FACT_CHECKER_MODEL = os.getenv("FACT_CHECKER_MODEL", LLM_MODEL)
 
 # Language Configuration
-LANGUAGE = os.getenv("LANGUAGE", "English")  # <<< NEW: Load language from .env
+LANGUAGE = os.getenv("LANGUAGE", "English")
 
 
 # --- Pydantic Models for Structured Output ---
@@ -41,13 +41,16 @@ class FactCheckResult(BaseModel):
     """Data model for the result of a fact-checking operation."""
 
     is_accurate: bool = Field(
-        description="True if the summary is fully supported by the article, otherwise False."
+        description="True only if the summary is fully accurate AND complete, otherwise False."
     )
     reasoning: str = Field(
-        description="A brief explanation of any inaccuracies, hallucinations, or omissions found. State 'Accurate' if no issues."
+        description="A brief explanation of all inaccuracies or omissions found. State 'Accurate and Complete' if no issues."
     )
-    corrected_summary: ArticleSummary = Field(
-        description="The corrected version of the summary. If the original was accurate, this will be identical."
+    corrected_summary_text: str = Field(
+        description="The definitive, corrected version of the prose summary text ONLY."
+    )
+    corrected_highlights: list[str] = Field(
+        description="The final, definitive list of highlights, incorporating corrections and additions."
     )
 
 
@@ -73,21 +76,24 @@ class ArticleProcessor:
     def get_initial_summary(self, content: str) -> dict:
         """Generates the first-pass summary of an article in the specified language."""
         parser = JsonOutputParser(pydantic_object=ArticleSummary)
+
         prompt = ChatPromptTemplate.from_template(
             """
-            You are a sports analyst. Your entire response MUST be in {language}.
-            Read the article below and create a concise summary.
+            You are a seasoned sports journalist. Your entire response MUST be in {language}.
+            Your goal is to create a comprehensive yet readable summary of the article below.
 
             **Your Task**:
             Respond with a JSON object that strictly follows this format: {format_instructions}
 
-            **Critical Instructions**:
-            - Base your analysis ONLY on the provided text. Do NOT invent facts or statistics.
-            - **Crucially, you MUST NOT translate or transliterate proper nouns like player names, 
-            team names, or league names.** Keep them in their original language as written in the 
-            article. For example, if the article says "LeBron James", your summary must also say 
-            "LeBron James", not a translated version.
-            - Ensure the `summary` and `highlights` fields are written in {language}.
+            **Key Guidelines**:
+            1.  **Write a Rich Summary**: Create an objective summary between 3 and 6 sentences. The length should be proportional to the detail in the article. A long, detailed game report warrants a longer summary. It should cover the main outcome, key context, and any significant implications (e.g., playoff chances, player milestones).
+            2.  **Extract Comprehensive Highlights**: Identify between 4 and 10 key highlights. The number should reflect the richness of the article; a detailed report may have many highlights, while a brief news update might only have a few. Do not force highlights if they aren't present. Good highlights include:
+                - Definitive statistics (top scorers, key percentages).
+                - Game-changing plays or pivotal moments.
+                - Important direct quotes or post-game reactions.
+                - Significant records broken or milestones achieved.
+                - Key injury updates mentioned in the text.
+            3.  **Fundamental Rule on Names**: **Crucially, you MUST NOT translate or transliterate proper nouns** like player names, team names, or league names. Keep them in their original language as written in the article. For example, if the article says "LeBron James", your summary must also say "LeBron James", not a translated version.
 
             Article Content:
             {content}
@@ -100,29 +106,30 @@ class ArticleProcessor:
     def get_verified_summary(
         self, original_content: str, initial_summary: dict
     ) -> dict:
-        """Fact-checks and corrects the initial summary, ensuring output is in the correct language."""
+        """Fact-checks, verifies completeness, and corrects the initial summary."""
         parser = JsonOutputParser(pydantic_object=FactCheckResult)
+
         prompt = ChatPromptTemplate.from_template(
             """
-            You are a meticulous fact-checker. Your entire response, including all fields in the 
-            JSON object, MUST be in {language}.Verify if the `Generated Summary` is factually consistent 
-            with the `Original Article`. Identify any "hallucinations" (details not supported by the article).
+            You are the Editor-in-Chief at a major sports news agency. Your entire response MUST be in {language}.
+            Your task is to meticulously review a `Generated Summary` from a junior journalist against the `Original Article`.
+            Your goal is to produce the final, publishable version by ensuring it is both **100% accurate** and **comprehensively complete**.
             Respond with a JSON object that strictly follows this format: {format_instructions}
 
-            **Instructions**:
-            1.  **Compare Carefully**: Cross-reference every claim in the summary against the original article.
-            2.  **Determine Accuracy**: If every detail is supported, set `is_accurate` to `true`. Otherwise, `false`.
-            3.  **Provide Reasoning**: In {language}, explain any inaccuracies found. If accurate, state 
-            the equivalent of "Accurate" in {language}.
-            4.  **Correct the Summary**: Create a `corrected_summary` object with all text fields written 
-            in {language}. If inaccurate, fix the mistakes to align with the article.
-            5.  **Crucially, when correcting the summary, you MUST NOT translate or transliterate proper 
-            nouns like player names or team names.** Keep them exactly as they appear in the original article.
+            **Your Editorial 5-Step Process**:
+            1.  **Fact-Check Existing Content**: Meticulously verify every statement in the `summary` text and every point in the `highlights` list. Note all factual errors.
+            2.  **Identify Missing Highlights**: Re-read the `Original Article` with a critical eye. Did the junior journalist miss any crucial highlights? Look for top scorer stats, game-winning plays, significant quotes, or injury updates.
+            3.  **Formulate the Final Verdict**: Set `is_accurate` to `true` ONLY if the original summary was **both 100% factually correct AND contained all major highlights**. If there are any factual errors OR any important omissions, you must set it to `false`.
+            4.  **Provide Comprehensive Reasoning**: In the `reasoning` field (in {language}), explain your verdict. Describe ALL issues found (e.g., "Incorrect final score in the summary, and the highlights missed Player X's record-breaking goal."). If there are no issues, state the equivalent of "Accurate and Complete" in {language}.
+            5.  **Construct the Final Output**: This is the most important step. Populate the final JSON object with the corrected content:
+                - **`corrected_summary_text`**: This field must contain ONLY the corrected prose summary text, written in {language}.
+                - **`corrected_highlights`**: This field is critical. It must be a **new, complete list of strings** that includes: (a) all accurate highlights from the original summary, (b) your corrections to any inaccurate highlights, and (c) any important highlights you discovered that were missing. This is the final, definitive set of highlights.
+                - **Preserve Names**: In all text you generate, you **MUST NOT translate or transliterate proper nouns** (player/team names). Keep them exactly as they appear in the original article.
 
             **Original Article**:
             ```{original_content}```
 
-            **Generated Summary (JSON)**:
+            **Generated Summary (JSON from junior journalist)**:
             ```json
             {generated_summary}
             ```
@@ -159,7 +166,16 @@ class ArticleProcessor:
 
         # Step 3: Update the JSON data in memory
         data["llm_summary"] = initial_summary
-        data["llm_summary_verified"] = fact_check_result
+        data["llm_summary_verified"] = {
+            "is_accurate": fact_check_result.get("is_accurate"),
+            "reasoning": fact_check_result.get("reasoning"),
+            "summary": fact_check_result.get(
+                "corrected_summary_text"
+            ),  # Use the corrected text
+            "highlights": fact_check_result.get(
+                "corrected_highlights"
+            ),  # Use the corrected highlights
+        }
 
         # Step 4: Write the updated data back to the original file
         with open(file_path, "w", encoding="utf-8") as f:
@@ -187,16 +203,9 @@ class ArticleProcessor:
         # Step 2: Fact-check and correct
         print(f"\n[2] Fact-Checking and Correcting in {self.language}...")
         fact_check_result = self.get_verified_summary(content, initial_summary)
-        print("\n--- FACT-CHECK ANALYSIS ---")
-        print(f"Accurate: {fact_check_result.get('is_accurate')}")
-        print(f"Reasoning: {fact_check_result.get('reasoning')}")
 
-        print("\n--- CORRECTED SUMMARY ---")
-        print(
-            json.dumps(
-                fact_check_result.get("corrected_summary"), indent=2, ensure_ascii=False
-            )
-        )
+        print("\n--- FACT-CHECK ANALYSIS ---")
+        print(json.dumps(fact_check_result, indent=2, ensure_ascii=False))
         print("-" * 50)
 
     def process_all_articles(self):
