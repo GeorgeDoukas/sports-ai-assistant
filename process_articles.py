@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -21,8 +22,9 @@ RAW_DIR = BASE_DIR / os.getenv("RAW_NEWS_DATA_DIR", "data/raw/news")
 LLM_MODEL = os.getenv("LLM_MODEL", "aya-expanse")
 FACT_CHECKER_MODEL = os.getenv("FACT_CHECKER_MODEL", LLM_MODEL)
 
-# Language Configuration
+# Language and Performance
 LANGUAGE = os.getenv("LANGUAGE", "English")
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", 4))
 
 
 # --- Pydantic Models for Structured Output ---
@@ -30,10 +32,10 @@ class ArticleSummary(BaseModel):
     """Data model for a structured article summary."""
 
     summary: str = Field(
-        description="2-3 objective sentences capturing the key outcome and significance."
+        description="3-6 objective sentences capturing the key outcome and significance."
     )
     highlights: list[str] = Field(
-        description="A list of 3-5 bullet points on standout performances or pivotal moments."
+        description="A list of 4-10 key bullet points on standout performances or pivotal moments."
     )
 
 
@@ -41,7 +43,7 @@ class FactCheckResult(BaseModel):
     """Data model for the result of a fact-checking operation."""
 
     is_accurate: bool = Field(
-        description="True only if the summary is fully accurate AND complete, otherwise False."
+        description="True only if the summary AND highlights were fully accurate AND complete, otherwise False."
     )
     reasoning: str = Field(
         description="A brief explanation of all inaccuracies or omissions found. State 'Accurate and Complete' if no issues."
@@ -71,12 +73,13 @@ class ArticleProcessor:
         self.llm = get_llm()
         self.fact_checker_llm = get_fact_checker_llm()
         self.language = language
-        print(f"✅ Initialized ArticleProcessor for language: {self.language}")
+        print(
+            f"✅ Initialized ArticleProcessor for language: {self.language} with {MAX_WORKERS} workers."
+        )
 
     def get_initial_summary(self, content: str) -> dict:
         """Generates the first-pass summary of an article in the specified language."""
         parser = JsonOutputParser(pydantic_object=ArticleSummary)
-
         prompt = ChatPromptTemplate.from_template(
             """
             You are a seasoned sports journalist. Your entire response MUST be in {language}.
@@ -108,7 +111,6 @@ class ArticleProcessor:
     ) -> dict:
         """Fact-checks, verifies completeness, and corrects the initial summary."""
         parser = JsonOutputParser(pydantic_object=FactCheckResult)
-
         prompt = ChatPromptTemplate.from_template(
             """
             You are the Editor-in-Chief at a major sports news agency. Your entire response MUST be in {language}.
@@ -146,41 +148,39 @@ class ArticleProcessor:
         )
 
     def process_and_update_file(self, file_path: Path):
-        """Processes a single article file and updates it with summaries."""
-        print(f"Processing: {file_path.name}")
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        """Processes a single article file and updates it with summaries. Designed to be thread-safe."""
+        try:
+            print(f"Processing: {file_path.name}")
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
-        content = data.get("article", {}).get("content")
-        if not content:
-            print("  ⚠️ Skipping, no content found.")
-            return
+            content = data.get("article", {}).get("content")
+            if not content:
+                print(f"  ⚠️ Skipping {file_path.name}, no content found.")
+                return
+            # Step 1: Generate initial summary
+            print("  - Generating initial summary...")
+            initial_summary = self.get_initial_summary(content)
 
-        # Step 1: Generate initial summary
-        print("  - Generating initial summary...")
-        initial_summary = self.get_initial_summary(content)
+            # Step 2: Fact-check and correct the summary
+            print("  - Fact-checking and correcting summary...")
+            fact_check_result = self.get_verified_summary(content, initial_summary)
 
-        # Step 2: Fact-check and correct the summary
-        print("  - Fact-checking and correcting summary...")
-        fact_check_result = self.get_verified_summary(content, initial_summary)
+            # Step 3: Update the JSON data in memory
+            data["llm_summary"] = initial_summary
+            data["llm_summary_verified"] = {
+                "is_accurate": fact_check_result.get("is_accurate"),
+                "reasoning": fact_check_result.get("reasoning"),
+                "summary": fact_check_result.get("corrected_summary_text"),
+                "highlights": fact_check_result.get("corrected_highlights"),
+            }
 
-        # Step 3: Update the JSON data in memory
-        data["llm_summary"] = initial_summary
-        data["llm_summary_verified"] = {
-            "is_accurate": fact_check_result.get("is_accurate"),
-            "reasoning": fact_check_result.get("reasoning"),
-            "summary": fact_check_result.get(
-                "corrected_summary_text"
-            ),  # Use the corrected text
-            "highlights": fact_check_result.get(
-                "corrected_highlights"
-            ),  # Use the corrected highlights
-        }
-
-        # Step 4: Write the updated data back to the original file
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"  ✅ Updated file with summaries: {file_path.name}")
+            # Step 4: Write the updated data back to the original file
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            print(f"  ✅ Updated file with summaries:: {file_path.name}")
+        except Exception as e:
+            print(f"  ❌ FAILED to process {file_path.name}: {e}")
 
     def evaluate_single_file(self, file_path: Path):
         """Runs the process on a single file and prints the comparison without saving."""
@@ -203,19 +203,65 @@ class ArticleProcessor:
         # Step 2: Fact-check and correct
         print(f"\n[2] Fact-Checking and Correcting in {self.language}...")
         fact_check_result = self.get_verified_summary(content, initial_summary)
-
         print("\n--- FACT-CHECK ANALYSIS ---")
-        print(json.dumps(fact_check_result, indent=2, ensure_ascii=False))
+        print(f"Accurate: {fact_check_result.get('is_accurate')}")
+        print(f"Reasoning: {fact_check_result.get('reasoning')}")
+
+        print("\n--- CORRECTED SUMMARY ---")
+        print(f"Summary Text: {fact_check_result.get('corrected_summary_text')}")
+        print(
+            f"Highlights: {json.dumps(fact_check_result.get('corrected_highlights'), indent=2, ensure_ascii=False)}"
+        )
         print("-" * 50)
 
-    def process_all_articles(self):
-        """Processes every article in the raw directory."""
-        print("\n--- Starting Full Article Processing ---")
-        process_count = 0
-        for article_file in RAW_DIR.rglob("*.json"):
-            self.process_and_update_file(article_file)
-            process_count += 1
-        print(f"\n✅ Processed a total of {process_count} articles.")
+    def process_all_articles_in_parallel(self):
+        """
+        Uses the Vector Store to find unprocessed articles and processes them in parallel.
+        """
+        print("\n--- Starting Full Article Processing (Parallel) ---")
+
+        # Step 1: Use VectorStoreManager to get a list of all known article file paths.
+        vs_manager = VectorStoreManager()
+        vs_manager.load()
+        if not vs_manager.vector_store:
+            print(
+                "❌ Vector store not found. Cannot determine which articles to process."
+            )
+            return
+
+        all_known_files = [
+            Path(doc.metadata["file_path"])
+            for doc in vs_manager.vector_store.docstore._dict.values()
+            if "file_path" in doc.metadata
+        ]
+
+        # Step 2: Create a to-do list of files that need summarization.
+        files_to_process = []
+        for file_path in all_known_files:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if "llm_summary_verified" not in data:
+                    files_to_process.append(file_path)
+            except (FileNotFoundError, json.JSONDecodeError) as e:
+                print(
+                    f"⚠️ Skipping file from vector store index due to error: {file_path} ({e})"
+                )
+
+        if not files_to_process:
+            print(
+                "✅ All articles in the vector store are already summarized. Nothing to do."
+            )
+            return
+
+        print(f"Found {len(files_to_process)} articles needing summarization.")
+
+        # Step 3: Process the to-do list in parallel using ThreadPoolExecutor.
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            # The map function is a clean way to apply a function to a list of items.
+            executor.map(self.process_and_update_file, files_to_process)
+
+        print(f"\n✅ Parallel processing complete.")
 
 
 if __name__ == "__main__":
@@ -226,11 +272,12 @@ if __name__ == "__main__":
         "--file", type=Path, help="Path to a single article JSON file to evaluate."
     )
     parser.add_argument(
-        "--all", action="store_true", help="Process all articles in the raw directory."
+        "--all",
+        action="store_true",
+        help="Process all articles in the raw directory using parallel processing.",
     )
     args = parser.parse_args()
 
-    # Pass the language from .env to the processor
     processor = ArticleProcessor(language=LANGUAGE)
 
     if args.file:
@@ -239,6 +286,6 @@ if __name__ == "__main__":
         else:
             print(f"❌ Error: File not found at '{args.file}'")
     elif args.all:
-        processor.process_all_articles()
+        processor.process_all_articles_in_parallel()
     else:
         print("❌ Error: Please specify either --file or --all.")
