@@ -168,7 +168,7 @@ class ArticleProcessor:
         for file_path in all_known_files:
             try:
                 with open(file_path, "r", encoding="utf-8") as f: data = json.load(f)
-                if "llm_summary_verified" not in data:
+                if "summary" not in data:
                     files_to_process.append(file_path)
             except (FileNotFoundError, json.JSONDecodeError) as e:
                 print(f"⚠️ Skipping file from vector store index due to error: {file_path} ({e})")
