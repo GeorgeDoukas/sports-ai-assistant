@@ -203,6 +203,7 @@ def save_article(article: dict, source: str, sport: str, competition: str):
 
     data = {
         "scraped_at": datetime.now().isoformat(),
+        "processing_status": "scraped",
         "source": source,
         "sport": sport,
         "competition": competition,

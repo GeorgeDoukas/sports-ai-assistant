@@ -100,6 +100,8 @@ class VectorStoreManager:
                         "title": article.get("title", "No Title"),
                         "url": article.get("url", ""),
                         "published_date": article.get("date_published", ""),
+                        "author": article.get("author", "Unknown"),
+                        "processing_status": article.get("processing_status", False),
                         "file_path": str(file_path)
                     }
                 )
