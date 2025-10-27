@@ -98,14 +98,16 @@ class ReportGenerator:
         print("  - Fetching full content from source files...")
         full_contents = []
         for article_data in articles:
-            file_path = article_data.get("article", {}).get("url") # Assuming file path is stored in url or similar
-            # A more robust way would be to query vector store if needed, but reading from file is direct
-            try:
-                 with open(article_data.get("file_path"), "r", encoding="utf-8") as f: # You need to ensure file_path is in your JSON
-                     raw_data = json.load(f)
-                     full_contents.append(raw_data.get("article", {}).get("content", ""))
-            except:
-                 # Fallback to what's in the current data if file_path is missing
+            # You should ensure 'file_path' is saved in your JSON metadata during scraping for this to be robust.
+            file_path = article_data.get("file_path") 
+            if file_path:
+                try:
+                     with open(file_path, "r", encoding="utf-8") as f:
+                         raw_data = json.load(f)
+                         full_contents.append(raw_data.get("article", {}).get("content", ""))
+                except FileNotFoundError:
+                     full_contents.append(article_data.get("article", {}).get("content", "")) # Fallback
+            else:
                  full_contents.append(article_data.get("article", {}).get("content", ""))
         return "\n\n--- ARTICLE SEPARATOR ---\n\n".join(filter(None, full_contents))
 
@@ -136,20 +138,28 @@ class ReportGenerator:
                     continue
 
                 print(f"📅 Generating daily report for {source} on {date}...")
-                
-                content_for_llm = ""
-                if self.args.method == 'summaries':
-                    content_for_llm = self._get_content_from_summaries(source_articles)
-                else: # from-vectorstore
-                    content_for_llm = self._get_content_from_vectorstore(source_articles)
+                content_for_llm = self._get_content_from_summaries(source_articles) if self.args.method == 'summaries' else self._get_content_from_vectorstore(source_articles)
 
+                # <<< --- IMPROVED PROMPT 1: Daily Source Report --- >>>
                 prompt_template = """
-                You are a sports editor, writing in {language}, creating a daily report for **{date}** from news source **{source}**.
-                Based on the provided context below, write a concise report in **Markdown format**.
-                Structure it with a 'Top Headlines' paragraph and 'Key Performances' bullet points.
-                Synthesize the information; do not just list the original points.
+                You are an elite sports journalist and editor. Your entire response MUST be in {language}.
+                Your task is to compile a daily digest for **{date}** from the news source **{source}**.
+                Your task is to read the following `Provided Context` and produce a final, verified, and comprehensive summary.
+                You must perform all steps internally—analysis, summarization, and fact-checking—before producing a single, perfect report Markdown output.
+                
 
-                **Provided Context:**
+                **Your Internal Thought Process (Don't write this in the output, just do it):**
+                1.  **Identify the main story**: Read through all the provided context. What is the single most important event or result?
+                2.  **Find supporting details**: What are the key statistics or performances that support the main story?
+                3.  **Draft a narrative**: Mentally structure the report with a strong opening headline, followed by the supporting details in a logical flow.
+                4.  **Self-Correction**: Is your draft a true synthesis, or just a list of the inputs? Ensure you are creating a cohesive narrative. Is everything 100% factually supported by the context? Did you miss anything important? Fix any mistakes and add any omissions.
+
+                **Final Report Structure**:
+                - **Top Headlines**: A paragraph summarizing the most significant results and news from this source.
+                - **Key Performances**: Bullet points highlighting standout player performances mentioned.
+                - **Preserve Names**: You MUST NOT translate proper nouns (player/team names). Keep them as they appear in the original article.
+                
+                **Provided Context from {source}:**
                 ```{context}```
                 """
                 report_content = self._generate_markdown_report(
@@ -167,20 +177,22 @@ class ReportGenerator:
                 continue
 
             print(f"📈 Generating combined summary for {comp} on {date}...")
-            
-            content_for_llm = ""
-            if self.args.method == 'summaries':
-                content_for_llm = self._get_content_from_summaries(articles)
-            else: # from-vectorstore
-                content_for_llm = self._get_content_from_vectorstore(articles)
+            content_for_llm = self._get_content_from_summaries(articles) if self.args.method == 'summaries' else self._get_content_from_vectorstore(articles)
 
+            # <<< --- IMPROVED PROMPT 2: Combined Competition Report --- >>>
             prompt_template = """
             You are a senior sports analyst, writing in {language}. Your task is to create a single, high-level summary for the **{competition}** competition on **{date}**.
-            Read all the provided context from different news sources below. Synthesize them into a single, cohesive narrative in **Markdown format**.
+            You will be given context from multiple news sources. Your goal is to synthesize them into a single, cohesive narrative in **Markdown format**.
 
-            **Your Goal**:
-            Produce a unified overview that answers: What were the most important stories and outcomes for this competition on this day, according to all available sources?
-            Structure the report with an 'Overall Summary' paragraph and a 'Consolidated Highlights' list.
+            **Your Internal Thought Process (Perform these steps before writing):**
+            1.  **Identify the overarching theme**: After reading all context, what is the most important, agreed-upon story of the day for this competition? (e.g., a major upset, a dominant team performance).
+            2.  **Consolidate key facts**: Extract the most critical statistics and performances. If sources report the same fact, you only need to state it once. If they conflict, note the discrepancy if it's significant.
+            3.  **Structure the master narrative**: Plan the report. Start with the main theme, then provide the consolidated highlights as evidence.
+            4.  **Self-Correction**: Review your mental draft. Does it accurately reflect the consensus of the sources? Is it a true synthesis, or just a collection of separate points? Ensure the narrative flows logically.
+
+            **Final Report Structure**:
+            - **Overall Summary**: A main paragraph that combines the key events from all sources into a single narrative.
+            - **Consolidated Highlights**: A single, unified list of bullet points with the most impressive performances found across all sources.
 
             **Provided Context from all sources:**
             ```{context}```
@@ -192,6 +204,7 @@ class ReportGenerator:
             with open(combined_report_path, "w", encoding="utf-8") as f:
                 f.write(report_content)
             print(f"  ✅ Saved combined report: {combined_report_path.name}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate flexible daily and combined sports reports.")
@@ -210,7 +223,6 @@ if __name__ == "__main__":
         default="summaries",
         help="Choose the data source method: 'summaries' (fast, from JSON) or 'vectorstore' (slower, from full content)."
     )
-    
     args = parser.parse_args()
 
     # --- Argument Validation ---
