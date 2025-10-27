@@ -1,17 +1,15 @@
 import argparse
 import json
-import os
 import math
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_ollama import ChatOllama
-from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field
 
+from llm_services import LANGUAGE, ArticleSummary, get_llm
 from vector_store import VectorStoreManager
 
 # --- Configuration ---
@@ -20,43 +18,7 @@ load_dotenv()
 BASE_DIR = Path(__file__).parent
 RAW_DIR = BASE_DIR / os.getenv("RAW_NEWS_DATA_DIR", "data/raw/news")
 
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
-# LLM Models
-LLM_MODEL = os.getenv("LLM_MODEL", "gemma3:4b-it-qat")
-FACT_CHECKER_MODEL = os.getenv("FACT_CHECKER_MODEL", LLM_MODEL)
-
-# Language and Performance
-LANGUAGE = os.getenv("LANGUAGE", "English")
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", 4))
-
-
-# --- Pydantic Models for Structured Output ---
-class ArticleSummary(BaseModel):
-    """Data model for a final, verified summary created in a single pass."""
-    summary: str = Field(description="The final, objective summary of 3-6 sentences.")
-    highlights: list[str] = Field(description="The final, complete list of 4-10 key highlights.")
-
-# --- Helper Functions ---
-def get_llm():
-    """
-    Initializes and returns the correct LLM provider based on the .env file.
-    
-    Args:
-        model_type (str): "main" for the primary model, "fact_checker" for the verifier.
-    """
-    provider = LLM_PROVIDER.lower()
-    print(f"ℹ️  Initializing LLM using provider: {provider}")
-
-    if provider == "openai_compatible":
-        return ChatOpenAI(
-            model=LLM_MODEL,
-            api_key=os.getenv("OPENAI_API_KEY"),
-            base_url=os.getenv("OPENAI_API_BASE")
-        )
-    elif provider == "ollama":
-        return ChatOllama(model=LLM_MODEL)
-    else:
-        raise ValueError(f"Unsupported LLM_PROVIDER: {provider}.")
 
 
 class ArticleProcessor:
