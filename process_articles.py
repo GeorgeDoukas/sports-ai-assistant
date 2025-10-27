@@ -32,35 +32,12 @@ MAX_WORKERS = int(os.getenv("MAX_WORKERS", 4))
 
 # --- Pydantic Models for Structured Output ---
 class ArticleSummary(BaseModel):
-    """Data model for a structured article summary."""
-
-    summary: str = Field(
-        description="3-6 objective sentences capturing the key outcome and significance."
-    )
-    highlights: list[str] = Field(
-        description="A list of 4-10 key bullet points on standout performances or pivotal moments."
-    )
-
-
-class FactCheckResult(BaseModel):
-    """Data model for the result of a fact-checking operation."""
-
-    is_accurate: bool = Field(
-        description="True only if the summary AND highlights were fully accurate AND complete, otherwise False."
-    )
-    reasoning: str = Field(
-        description="A brief explanation of all inaccuracies or omissions found. State 'Accurate and Complete' if no issues."
-    )
-    corrected_summary_text: str = Field(
-        description="The definitive, corrected version of the prose summary text ONLY."
-    )
-    corrected_highlights: list[str] = Field(
-        description="The final, definitive list of highlights, incorporating corrections and additions."
-    )
-
+    """Data model for a final, verified summary created in a single pass."""
+    summary: str = Field(description="The final, objective summary of 3-6 sentences.")
+    highlights: list[str] = Field(description="The final, complete list of 4-10 key highlights.")
 
 # --- Helper Functions ---
-def get_llm(model_type: str = "main"):
+def get_llm():
     """
     Initializes and returns the correct LLM provider based on the .env file.
     
@@ -68,27 +45,16 @@ def get_llm(model_type: str = "main"):
         model_type (str): "main" for the primary model, "fact_checker" for the verifier.
     """
     provider = LLM_PROVIDER.lower()
-    print(f"ℹ️  Initializing LLM for '{model_type}' using provider: {provider}")
+    print(f"ℹ️  Initializing LLM using provider: {provider}")
 
     if provider == "openai_compatible":
-        if model_type == "fact_checker":
-            model_name = FACT_CHECKER_MODEL
-        else:
-            model_name = LLM_MODEL
-        
         return ChatOpenAI(
-            model=model_name,
+            model=LLM_MODEL,
             api_key=os.getenv("OPENAI_API_KEY"),
             base_url=os.getenv("OPENAI_API_BASE")
         )
-        
     elif provider == "ollama":
-        if model_type == "fact_checker":
-            model_name = FACT_CHECKER_MODEL
-        else:
-            model_name = LLM_MODEL
-            
-        return ChatOllama(model=model_name)
+        return ChatOllama(model=LLM_MODEL)
     else:
         raise ValueError(f"Unsupported LLM_PROVIDER: {provider}.")
 
@@ -98,73 +64,35 @@ class ArticleProcessor:
         self.language = language
         print(f"✅ Initialized ArticleProcessor for language: {self.language} with {MAX_WORKERS} workers.")
 
-    def _get_initial_summary(self, content: str, llm_client) -> dict:
+    def _summarize_content(self, content: str, llm_client) -> dict:
         parser = JsonOutputParser(pydantic_object=ArticleSummary)
         prompt = ChatPromptTemplate.from_template(
-            """
-            You are a seasoned sports journalist. Your entire response MUST be in {language}.
-            Your goal is to create a comprehensive yet readable summary of the article below.
+                """
+                You are an elite sports journalist and editor. Your entire response MUST be in {language}.
+                Your task is to read the following `Original Article` and produce a final, verified, and comprehensive summary.
+                You must perform all steps internally—analysis, summarization, and fact-checking—before producing a single, perfect JSON output.
+                The JSON must strictly follow this format: {format_instructions}
 
-            **Your Task**:
-            Respond with a JSON object that strictly follows this format: {format_instructions}
+                **Your Internal Thought Process (Don't write this in the output, just do it):**
+                1.  Read the article to understand the main outcome, key players, and statistics.
+                2.  Mentally draft a 3-6 sentence summary.
+                3.  Mentally identify 4-10 of the most crucial highlights (top stats, game-winners, key injuries, etc.).
+                4.  **Self-Correction:** Reread your draft summary and highlights. Are they 100% supported by the article? Did you miss anything important? Fix any mistakes and add any omissions.
 
-            **Key Guidelines**:
-            1.  **Write a Rich Summary**: Create an objective summary between 3 and 6 sentences. The length should be proportional to the detail in the article. A long, detailed game report warrants a longer summary. It should cover the main outcome, key context, and any significant implications (e.g., playoff chances, player milestones).
-            2.  **Extract Comprehensive Highlights**: Identify between 4 and 10 key highlights. The number should reflect the richness of the article; a detailed report may have many highlights, while a brief news update might only have a few. Do not force highlights if they aren't present. Good highlights include:
-                - Definitive statistics (top scorers, key percentages).
-                - Game-changing plays or pivotal moments.
-                - Important direct quotes or post-game reactions.
-                - Significant records broken or milestones achieved.
-                - Key injury updates mentioned in the text.
-            3.  **Fundamental Rule on Names**: **Crucially, you MUST NOT translate or transliterate proper nouns** like player names, team names, or league names. Keep them in their original language as written in the article. For example, if the article says "LeBron James", your summary must also say "LeBron James", not a translated version.
+                **Final Output Instructions**:
+                - **`summary`**: The final, corrected prose summary.
+                - **`highlights`**: The final, comprehensive list of highlights.
+                - **Preserve Names**: You MUST NOT translate proper nouns (player/team names). Keep them as they appear in the original article.
 
-            Article Content:
-            {content}
-            """,
-            partial_variables={"format_instructions": parser.get_format_instructions()},
-        )
+                **Original Article**:
+                ```{content}```
+                """,
+                partial_variables={"format_instructions": parser.get_format_instructions()},
+            )
         chain = prompt | llm_client | parser
         return chain.invoke({"content": content, "language": self.language})
 
-    def _get_verified_summary(self, original_content: str, initial_summary: dict, fact_checker_client) -> dict:
-        parser = JsonOutputParser(pydantic_object=FactCheckResult)
-        prompt = ChatPromptTemplate.from_template(
-            """
-            You are the Editor-in-Chief at a major sports news agency. Your entire response MUST be in {language}.
-            Your task is to meticulously review a `Generated Summary` from a junior journalist against the `Original Article`.
-            Your goal is to produce the final, publishable version by ensuring it is both **100% accurate** and **comprehensively complete**.
-            Respond with a JSON object that strictly follows this format: {format_instructions}
-
-            **Your Editorial 5-Step Process**:
-            1.  **Fact-Check Existing Content**: Meticulously verify every statement in the `summary` text and every point in the `highlights` list. Note all factual errors.
-            2.  **Identify Missing Highlights**: Re-read the `Original Article` with a critical eye. Did the junior journalist miss any crucial highlights? Look for top scorer stats, game-winning plays, significant quotes, or injury updates.
-            3.  **Formulate the Final Verdict**: Set `is_accurate` to `true` ONLY if the original summary was **both 100% factually correct AND contained all major highlights**. If there are any factual errors OR any important omissions, you must set it to `false`.
-            4.  **Provide Comprehensive Reasoning**: In the `reasoning` field (in {language}), explain your verdict. Describe ALL issues found (e.g., "Incorrect final score in the summary, and the highlights missed Player X's record-breaking goal."). If there are no issues, state the equivalent of "Accurate and Complete" in {language}.
-            5.  **Construct the Final Output**: This is the most important step. Populate the final JSON object with the corrected content:
-                - **`corrected_summary_text`**: This field must contain ONLY the corrected prose summary text, written in {language}.
-                - **`corrected_highlights`**: This field is critical. It must be a **new, complete list of strings** that includes: (a) all accurate highlights from the original summary, (b) your corrections to any inaccurate highlights, and (c) any important highlights you discovered that were missing. This is the final, definitive set of highlights.
-                - **Preserve Names**: In all text you generate, you **MUST NOT translate or transliterate proper nouns** (player/team names). Keep them exactly as they appear in the original article.
-
-            **Original Article**:
-            ```{original_content}```
-
-            **Generated Summary (JSON from junior journalist)**:
-            ```json
-            {generated_summary}
-            ```
-            """,
-            partial_variables={"format_instructions": parser.get_format_instructions()},
-        )
-        chain = prompt | fact_checker_client | parser
-        return chain.invoke(
-            {
-                "original_content": original_content,
-                "generated_summary": json.dumps(initial_summary, ensure_ascii=False),
-                "language": self.language,
-            }
-        )
-
-    def _process_file(self, file_path: Path, llm_client, fact_checker_client):
+    def _process_file(self, file_path: Path, llm_client):
         """Processes a single article file using the provided LLM clients."""
         try:
             print(f"Processing: {file_path.name}")
@@ -174,24 +102,16 @@ class ArticleProcessor:
             if not content:
                 print(f"  ⚠️ Skipping {file_path.name}, no content found.")
                 return
-            # Step 1: Generate initial summary
-            print("  - Generating initial summary...")
+            # Step 1: Generate summary
+            print("  - Generating summary...")
+            summary_and_highlights = self._summarize_content(content, llm_client)
 
-            initial_summary = self._get_initial_summary(content, llm_client)
-            # Step 2: Fact-check and correct the summary
-            print("  - Fact-checking and correcting summary...")
-            fact_check_result = self._get_verified_summary(content, initial_summary, fact_checker_client)
+            # Step 2: Update the JSON data in memory
+            data["summary"] = summary_and_highlights.get("summary")
+            data["highlights"] = summary_and_highlights.get("highlights")
+            data["processing_status"] = "processed"
 
-            # Step 3: Update the JSON data in memory
-            data["llm_summary"] = initial_summary
-            data["llm_summary_verified"] = {
-                "is_accurate": fact_check_result.get("is_accurate"),
-                "reasoning": fact_check_result.get("reasoning"),
-                "summary": fact_check_result.get("corrected_summary_text"),
-                "highlights": fact_check_result.get("corrected_highlights"),
-            }
-
-            # Step 4: Write the updated data back to the original file
+            # Step 3: Write the updated data back to the original file
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             print(f"  ✅ Updated: {file_path.name}")
@@ -201,17 +121,15 @@ class ArticleProcessor:
     def _process_chunk(self, file_chunk: list[Path]):
         """Worker function that processes a specific list (chunk) of files."""
         # Create LLM clients ONCE for this thread/worker.
-        llm_client = get_llm(model_type="main")
-        fact_checker_client = get_llm(model_type="fact_checker")
+        llm_client = get_llm()
         
         print(f"Worker started, processing a chunk of {len(file_chunk)} files.")
         for file_path in file_chunk:
-            self._process_file(file_path, llm_client, fact_checker_client)
+            self._process_file(file_path, llm_client)
 
     def evaluate_single_file(self, file_path: Path):
         """Runs the process on a single file for evaluation."""
-        llm_client = get_llm(model_type="main")
-        fact_checker_client = get_llm(model_type="fact_checker")
+        llm_client = get_llm()
 
         print("-" * 50)
         print(f"🔍 Evaluating LLM Performance for: {file_path.name}")
@@ -222,22 +140,12 @@ class ArticleProcessor:
         if not content:
             print("❌ Cannot evaluate: No content found in file.")
             return
-        # Step 1: Generate initial summary
-        print(f"\n[1] Generating Initial Summary in {self.language}...")
-        initial_summary = self._get_initial_summary(content, llm_client)
-        print("\n--- INITIAL SUMMARY ---")
-        print(json.dumps(initial_summary, indent=2, ensure_ascii=False))
+        # Step 1: Generate summary
+        print(f"\n[1] Generating Summary in {self.language}...")
+        summary = self._summarize_content(content, llm_client)
+        print("\n--- SUMMARY ---")
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
 
-        # Step 2: Fact-check and correct
-        print(f"\n[2] Fact-Checking and Correcting in {self.language}...")
-        fact_check_result = self._get_verified_summary(content, initial_summary, fact_checker_client)
-        print("\n--- FACT-CHECK ANALYSIS ---")
-        print(f"Accurate: {fact_check_result.get('is_accurate')}")
-        print(f"Reasoning: {fact_check_result.get('reasoning')}")
-
-        print("\n--- CORRECTED SUMMARY ---")
-        print(f"Summary Text: {fact_check_result.get('corrected_summary_text')}")
-        print(f"Highlights: {json.dumps(fact_check_result.get('corrected_highlights'), indent=2, ensure_ascii=False)}")
         print("-" * 50)
 
     def process_all_articles_in_parallel(self):
