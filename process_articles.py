@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from vector_store import VectorStoreManager
@@ -18,8 +19,9 @@ load_dotenv()
 BASE_DIR = Path(__file__).parent
 RAW_DIR = BASE_DIR / os.getenv("RAW_NEWS_DATA_DIR", "data/raw/news")
 
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
 # LLM Models
-LLM_MODEL = os.getenv("LLM_MODEL", "aya-expanse")
+LLM_MODEL = os.getenv("LLM_MODEL", "gemma3:4b-it-qat")
 FACT_CHECKER_MODEL = os.getenv("FACT_CHECKER_MODEL", LLM_MODEL)
 
 # Language and Performance
@@ -57,21 +59,46 @@ class FactCheckResult(BaseModel):
 
 
 # --- Helper Functions ---
-def get_llm(model_name=LLM_MODEL):
-    """Initializes and returns the ChatOllama instance for general tasks."""
-    return ChatOllama(model=model_name)
+def get_llm(model_type: str = "main"):
+    """
+    Initializes and returns the correct LLM provider based on the .env file.
+    
+    Args:
+        model_type (str): "main" for the primary model, "fact_checker" for the verifier.
+    """
+    provider = LLM_PROVIDER.lower()
+    print(f"ℹ️  Initializing LLM for '{model_type}' using provider: {provider}")
 
+    if provider == "openai_compatible":
+        # For vLLM, TogetherAI, Anyscale, etc.
+        if model_type == "fact_checker":
+            model_name = FACT_CHECKER_MODEL
+        else:
+            model_name = LLM_MODEL
+        
+        return ChatOpenAI(
+            model=model_name,
+            api_key=os.getenv("OPENAI_API_KEY"),
+            base_url=os.getenv("OPENAI_API_BASE")
+        )
+        
+    elif provider == "ollama":
+        # Your original local setup
+        if model_type == "fact_checker":
+            model_name = FACT_CHECKER_MODEL
+        else:
+            model_name = LLM_MODEL
+            
+        return ChatOllama(model=model_name)
 
-def get_fact_checker_llm():
-    """Initializes and returns the ChatOllama instance for fact-checking."""
-    print(f"  (Using fact-checker model: {FACT_CHECKER_MODEL})")
-    return ChatOllama(model=FACT_CHECKER_MODEL)
+    else:
+        raise ValueError(f"Unsupported LLM_PROVIDER: {provider}. Please choose from 'ollama', 'openai_compatible', or 'google'.")
 
 
 class ArticleProcessor:
     def __init__(self, language: str):
-        self.llm = get_llm()
-        self.fact_checker_llm = get_fact_checker_llm()
+        self.llm = get_llm(model_type="main")
+        self.fact_checker_llm = get_llm(model_type="fact_checker")
         self.language = language
         print(
             f"✅ Initialized ArticleProcessor for language: {self.language} with {MAX_WORKERS} workers."
