@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import math
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -97,7 +98,7 @@ class ArticleProcessor:
         self.language = language
         print(f"✅ Initialized ArticleProcessor for language: {self.language} with {MAX_WORKERS} workers.")
 
-    def get_initial_summary(self, content: str, llm_client) -> dict: # <<< Pass client in
+    def _get_initial_summary(self, content: str, llm_client) -> dict:
         parser = JsonOutputParser(pydantic_object=ArticleSummary)
         prompt = ChatPromptTemplate.from_template(
             """
@@ -125,7 +126,7 @@ class ArticleProcessor:
         chain = prompt | llm_client | parser
         return chain.invoke({"content": content, "language": self.language})
 
-    def get_verified_summary(self, original_content: str, initial_summary: dict, fact_checker_client) -> dict: # <<< Pass client in
+    def _get_verified_summary(self, original_content: str, initial_summary: dict, fact_checker_client) -> dict:
         parser = JsonOutputParser(pydantic_object=FactCheckResult)
         prompt = ChatPromptTemplate.from_template(
             """
@@ -163,12 +164,8 @@ class ArticleProcessor:
             }
         )
 
-    def process_and_update_file(self, file_path: Path):
-        """Processes a single article file. Designed to be run in a separate thread."""
-
-        llm_client = get_llm(model_type="main")
-        fact_checker_client = get_llm(model_type="fact_checker")
-
+    def _process_file(self, file_path: Path, llm_client, fact_checker_client):
+        """Processes a single article file using the provided LLM clients."""
         try:
             print(f"Processing: {file_path.name}")
             with open(file_path, "r", encoding="utf-8") as f: data = json.load(f)
@@ -177,13 +174,13 @@ class ArticleProcessor:
             if not content:
                 print(f"  ⚠️ Skipping {file_path.name}, no content found.")
                 return
-                
             # Step 1: Generate initial summary
             print("  - Generating initial summary...")
-            initial_summary = self.get_initial_summary(content, llm_client)
+
+            initial_summary = self._get_initial_summary(content, llm_client)
             # Step 2: Fact-check and correct the summary
             print("  - Fact-checking and correcting summary...")
-            fact_check_result = self.get_verified_summary(content, initial_summary, fact_checker_client)
+            fact_check_result = self._get_verified_summary(content, initial_summary, fact_checker_client)
 
             # Step 3: Update the JSON data in memory
             data["llm_summary"] = initial_summary
@@ -197,9 +194,19 @@ class ArticleProcessor:
             # Step 4: Write the updated data back to the original file
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            print(f"  ✅ Updated file with summaries:: {file_path.name}")
+            print(f"  ✅ Updated: {file_path.name}")
         except Exception as e:
             print(f"  ❌ FAILED to process {file_path.name}: {e}")
+
+    def _process_chunk(self, file_chunk: list[Path]):
+        """Worker function that processes a specific list (chunk) of files."""
+        # Create LLM clients ONCE for this thread/worker.
+        llm_client = get_llm(model_type="main")
+        fact_checker_client = get_llm(model_type="fact_checker")
+        
+        print(f"Worker started, processing a chunk of {len(file_chunk)} files.")
+        for file_path in file_chunk:
+            self._process_file(file_path, llm_client, fact_checker_client)
 
     def evaluate_single_file(self, file_path: Path):
         """Runs the process on a single file for evaluation."""
@@ -217,13 +224,13 @@ class ArticleProcessor:
             return
         # Step 1: Generate initial summary
         print(f"\n[1] Generating Initial Summary in {self.language}...")
-        initial_summary = self.get_initial_summary(content, llm_client)
+        initial_summary = self._get_initial_summary(content, llm_client)
         print("\n--- INITIAL SUMMARY ---")
         print(json.dumps(initial_summary, indent=2, ensure_ascii=False))
 
         # Step 2: Fact-check and correct
         print(f"\n[2] Fact-Checking and Correcting in {self.language}...")
-        fact_check_result = self.get_verified_summary(content, initial_summary, fact_checker_client)
+        fact_check_result = self._get_verified_summary(content, initial_summary, fact_checker_client)
         print("\n--- FACT-CHECK ANALYSIS ---")
         print(f"Accurate: {fact_check_result.get('is_accurate')}")
         print(f"Reasoning: {fact_check_result.get('reasoning')}")
@@ -235,7 +242,8 @@ class ArticleProcessor:
 
     def process_all_articles_in_parallel(self):
         """
-        Uses the Vector Store to find unprocessed articles and processes them in parallel.
+        Finds unprocessed articles, manually partitions them into chunks,
+        and processes them in parallel to prevent conflicts.
         """
         print("\n--- Starting Full Article Processing (Parallel) ---")
 
@@ -263,10 +271,28 @@ class ArticleProcessor:
 
         print(f"Found {len(files_to_process)} articles needing summarization.")
 
-        # Step 3: Process the to-do list in parallel using ThreadPoolExecutor.
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            # The map function is a clean way to apply a function to a list of items.
-            executor.map(self.process_and_update_file, files_to_process)
+        # Step 3: Determine number of workers and split work into chunks.
+        if len(files_to_process) < MAX_WORKERS:
+            num_workers = len(files_to_process)
+        else:
+            num_workers = MAX_WORKERS
+        
+        if num_workers == 0:
+            return
+
+        # Split the list of files into chunks for each worker
+        chunk_size = math.ceil(len(files_to_process) / num_workers)
+        chunks = [
+            files_to_process[i : i + chunk_size]
+            for i in range(0, len(files_to_process), chunk_size)
+        ]
+        
+        print(f"Splitting work into {len(chunks)} chunks for {num_workers} workers.")
+
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            # Submit each chunk to the new worker function
+            executor.map(self._process_chunk, chunks)
+
         print(f"\n✅ Parallel processing complete.")
 
 
