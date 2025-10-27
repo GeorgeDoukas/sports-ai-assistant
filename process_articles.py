@@ -70,7 +70,6 @@ def get_llm(model_type: str = "main"):
     print(f"ℹ️  Initializing LLM for '{model_type}' using provider: {provider}")
 
     if provider == "openai_compatible":
-        # For vLLM, TogetherAI, Anyscale, etc.
         if model_type == "fact_checker":
             model_name = FACT_CHECKER_MODEL
         else:
@@ -83,29 +82,22 @@ def get_llm(model_type: str = "main"):
         )
         
     elif provider == "ollama":
-        # Your original local setup
         if model_type == "fact_checker":
             model_name = FACT_CHECKER_MODEL
         else:
             model_name = LLM_MODEL
             
         return ChatOllama(model=model_name)
-
     else:
-        raise ValueError(f"Unsupported LLM_PROVIDER: {provider}. Please choose from 'ollama', 'openai_compatible', or 'google'.")
+        raise ValueError(f"Unsupported LLM_PROVIDER: {provider}.")
 
 
 class ArticleProcessor:
     def __init__(self, language: str):
-        self.llm = get_llm(model_type="main")
-        self.fact_checker_llm = get_llm(model_type="fact_checker")
         self.language = language
-        print(
-            f"✅ Initialized ArticleProcessor for language: {self.language} with {MAX_WORKERS} workers."
-        )
+        print(f"✅ Initialized ArticleProcessor for language: {self.language} with {MAX_WORKERS} workers.")
 
-    def get_initial_summary(self, content: str) -> dict:
-        """Generates the first-pass summary of an article in the specified language."""
+    def get_initial_summary(self, content: str, llm_client) -> dict: # <<< Pass client in
         parser = JsonOutputParser(pydantic_object=ArticleSummary)
         prompt = ChatPromptTemplate.from_template(
             """
@@ -130,13 +122,10 @@ class ArticleProcessor:
             """,
             partial_variables={"format_instructions": parser.get_format_instructions()},
         )
-        chain = prompt | self.llm | parser
+        chain = prompt | llm_client | parser
         return chain.invoke({"content": content, "language": self.language})
 
-    def get_verified_summary(
-        self, original_content: str, initial_summary: dict
-    ) -> dict:
-        """Fact-checks, verifies completeness, and corrects the initial summary."""
+    def get_verified_summary(self, original_content: str, initial_summary: dict, fact_checker_client) -> dict: # <<< Pass client in
         parser = JsonOutputParser(pydantic_object=FactCheckResult)
         prompt = ChatPromptTemplate.from_template(
             """
@@ -165,7 +154,7 @@ class ArticleProcessor:
             """,
             partial_variables={"format_instructions": parser.get_format_instructions()},
         )
-        chain = prompt | self.fact_checker_llm | parser
+        chain = prompt | fact_checker_client | parser
         return chain.invoke(
             {
                 "original_content": original_content,
@@ -175,23 +164,26 @@ class ArticleProcessor:
         )
 
     def process_and_update_file(self, file_path: Path):
-        """Processes a single article file and updates it with summaries. Designed to be thread-safe."""
+        """Processes a single article file. Designed to be run in a separate thread."""
+
+        llm_client = get_llm(model_type="main")
+        fact_checker_client = get_llm(model_type="fact_checker")
+
         try:
             print(f"Processing: {file_path.name}")
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            with open(file_path, "r", encoding="utf-8") as f: data = json.load(f)
 
             content = data.get("article", {}).get("content")
             if not content:
                 print(f"  ⚠️ Skipping {file_path.name}, no content found.")
                 return
+                
             # Step 1: Generate initial summary
             print("  - Generating initial summary...")
-            initial_summary = self.get_initial_summary(content)
-
+            initial_summary = self.get_initial_summary(content, llm_client)
             # Step 2: Fact-check and correct the summary
             print("  - Fact-checking and correcting summary...")
-            fact_check_result = self.get_verified_summary(content, initial_summary)
+            fact_check_result = self.get_verified_summary(content, initial_summary, fact_checker_client)
 
             # Step 3: Update the JSON data in memory
             data["llm_summary"] = initial_summary
@@ -210,35 +202,35 @@ class ArticleProcessor:
             print(f"  ❌ FAILED to process {file_path.name}: {e}")
 
     def evaluate_single_file(self, file_path: Path):
-        """Runs the process on a single file and prints the comparison without saving."""
+        """Runs the process on a single file for evaluation."""
+        llm_client = get_llm(model_type="main")
+        fact_checker_client = get_llm(model_type="fact_checker")
+
         print("-" * 50)
         print(f"🔍 Evaluating LLM Performance for: {file_path.name}")
         print("-" * 50)
 
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        with open(file_path, "r", encoding="utf-8") as f: data = json.load(f)
         content = data.get("article", {}).get("content")
         if not content:
             print("❌ Cannot evaluate: No content found in file.")
             return
         # Step 1: Generate initial summary
         print(f"\n[1] Generating Initial Summary in {self.language}...")
-        initial_summary = self.get_initial_summary(content)
+        initial_summary = self.get_initial_summary(content, llm_client)
         print("\n--- INITIAL SUMMARY ---")
         print(json.dumps(initial_summary, indent=2, ensure_ascii=False))
 
         # Step 2: Fact-check and correct
         print(f"\n[2] Fact-Checking and Correcting in {self.language}...")
-        fact_check_result = self.get_verified_summary(content, initial_summary)
+        fact_check_result = self.get_verified_summary(content, initial_summary, fact_checker_client)
         print("\n--- FACT-CHECK ANALYSIS ---")
         print(f"Accurate: {fact_check_result.get('is_accurate')}")
         print(f"Reasoning: {fact_check_result.get('reasoning')}")
 
         print("\n--- CORRECTED SUMMARY ---")
         print(f"Summary Text: {fact_check_result.get('corrected_summary_text')}")
-        print(
-            f"Highlights: {json.dumps(fact_check_result.get('corrected_highlights'), indent=2, ensure_ascii=False)}"
-        )
+        print(f"Highlights: {json.dumps(fact_check_result.get('corrected_highlights'), indent=2, ensure_ascii=False)}")
         print("-" * 50)
 
     def process_all_articles_in_parallel(self):
@@ -251,34 +243,22 @@ class ArticleProcessor:
         vs_manager = VectorStoreManager()
         vs_manager.load()
         if not vs_manager.vector_store:
-            print(
-                "❌ Vector store not found. Cannot determine which articles to process."
-            )
+            print("❌ Vector store not found. Cannot determine which articles to process.")
             return
 
-        all_known_files = [
-            Path(doc.metadata["file_path"])
-            for doc in vs_manager.vector_store.docstore._dict.values()
-            if "file_path" in doc.metadata
-        ]
-
+        all_known_files = [Path(doc.metadata["file_path"]) for doc in vs_manager.vector_store.docstore._dict.values() if "file_path" in doc.metadata]
         # Step 2: Create a to-do list of files that need summarization.
         files_to_process = []
         for file_path in all_known_files:
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                with open(file_path, "r", encoding="utf-8") as f: data = json.load(f)
                 if "llm_summary_verified" not in data:
                     files_to_process.append(file_path)
             except (FileNotFoundError, json.JSONDecodeError) as e:
-                print(
-                    f"⚠️ Skipping file from vector store index due to error: {file_path} ({e})"
-                )
+                print(f"⚠️ Skipping file from vector store index due to error: {file_path} ({e})")
 
         if not files_to_process:
-            print(
-                "✅ All articles in the vector store are already summarized. Nothing to do."
-            )
+            print("✅ All articles in the vector store are already summarized. Nothing to do.")
             return
 
         print(f"Found {len(files_to_process)} articles needing summarization.")
@@ -287,22 +267,13 @@ class ArticleProcessor:
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             # The map function is a clean way to apply a function to a list of items.
             executor.map(self.process_and_update_file, files_to_process)
-
         print(f"\n✅ Parallel processing complete.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Summarize, fact-check, and evaluate sports articles."
-    )
-    parser.add_argument(
-        "--file", type=Path, help="Path to a single article JSON file to evaluate."
-    )
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Process all articles in the raw directory using parallel processing.",
-    )
+    parser = argparse.ArgumentParser(description="Summarize, fact-check, and evaluate sports articles.")
+    parser.add_argument("--file", type=Path, help="Path to a single article JSON file to evaluate.")
+    parser.add_argument("--all", action="store_true", help="Process all articles in the raw directory using parallel processing.")
     args = parser.parse_args()
 
     processor = ArticleProcessor(language=LANGUAGE)
