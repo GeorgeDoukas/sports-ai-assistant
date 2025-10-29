@@ -5,11 +5,10 @@ from collections import defaultdict
 from pathlib import Path
 
 from dotenv import load_dotenv
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 
-# --- Import from our shared module ---
-from llm_services import get_llm, LANGUAGE
+from llm_services import LANGUAGE, get_llm
 from vector_store import VectorStoreManager
 
 # --- Configuration ---
@@ -26,6 +25,7 @@ class ReportGenerator:
     """
     Generates structured daily and competition-level reports based on flexible command-line arguments.
     """
+
     def __init__(self, args):
         self.args = args
         print(f"ℹ️  Initializing ReportGenerator with task arguments...")
@@ -46,7 +46,7 @@ class ReportGenerator:
             try:
                 with open(article_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                
+
                 if data.get("processing_status") != "processed":
                     continue
 
@@ -54,20 +54,24 @@ class ReportGenerator:
                 sport = data.get("sport")
                 comp = data.get("competition")
                 # Normalize date format for reliable matching
-                date_folder = data.get("article", {}).get("date_published", "").replace(' ', '-')
+                date_folder = (
+                    data.get("article", {}).get("date_published", "").replace(" ", "-")
+                )
 
                 if self.args.sport and sport != self.args.sport:
                     continue
                 if self.args.competition and comp != self.args.competition:
                     continue
-                if self.args.date and date_folder != self.args.date.replace(' ', '-'):
+                if self.args.date and date_folder != self.args.date.replace(" ", "-"):
                     continue
-                
+
                 grouped_articles[(sport, comp, date_folder)].append(data)
             except Exception as e:
                 print(f"⚠️ Could not process file {article_file.name}: {e}")
-        
-        print(f"✅ Found {len(grouped_articles)} unique competition-dates matching filter criteria.")
+
+        print(
+            f"✅ Found {len(grouped_articles)} unique competition-dates matching filter criteria."
+        )
         return grouped_articles
 
     def _generate_markdown_report(self, prompt_template: str, context: dict) -> str:
@@ -75,7 +79,7 @@ class ReportGenerator:
         prompt = ChatPromptTemplate.from_template(prompt_template)
         chain = prompt | self.llm | StrOutputParser()
         try:
-            context['language'] = LANGUAGE
+            context["language"] = LANGUAGE
             return chain.invoke(context)
         except Exception as e:
             print(f"  ❌ LLM Error: {e}")
@@ -88,8 +92,9 @@ class ReportGenerator:
                 "source": article.get("source"),
                 "title": article.get("article", {}).get("title"),
                 "summary": article.get("summary"),
-                "highlights": article.get("highlights", [])
-            } for article in articles
+                "highlights": article.get("highlights", []),
+            }
+            for article in articles
         ]
         return json.dumps(summaries_list, indent=2, ensure_ascii=False)
 
@@ -99,18 +104,21 @@ class ReportGenerator:
         full_contents = []
         for article_data in articles:
             # You should ensure 'file_path' is saved in your JSON metadata during scraping for this to be robust.
-            file_path = article_data.get("file_path") 
+            file_path = article_data.get("file_path")
             if file_path:
                 try:
-                     with open(file_path, "r", encoding="utf-8") as f:
-                         raw_data = json.load(f)
-                         full_contents.append(raw_data.get("article", {}).get("content", ""))
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        raw_data = json.load(f)
+                        full_contents.append(
+                            raw_data.get("article", {}).get("content", "")
+                        )
                 except FileNotFoundError:
-                     full_contents.append(article_data.get("article", {}).get("content", "")) # Fallback
+                    full_contents.append(
+                        article_data.get("article", {}).get("content", "")
+                    )  # Fallback
             else:
-                 full_contents.append(article_data.get("article", {}).get("content", ""))
+                full_contents.append(article_data.get("article", {}).get("content", ""))
         return "\n\n--- ARTICLE SEPARATOR ---\n\n".join(filter(None, full_contents))
-
 
     def run(self):
         """
@@ -129,7 +137,7 @@ class ReportGenerator:
             articles_by_source = defaultdict(list)
             for article in articles:
                 articles_by_source[article.get("source", "Unknown")].append(article)
-            
+
             for source, source_articles in articles_by_source.items():
                 report_path = output_dir / f"daily_report_{source}.md"
                 # Smart Skip Logic: Skip if using --all and file exists.
@@ -138,7 +146,11 @@ class ReportGenerator:
                     continue
 
                 print(f"📅 Generating daily report for {source} on {date}...")
-                content_for_llm = self._get_content_from_summaries(source_articles) if self.args.method == 'summaries' else self._get_content_from_vectorstore(source_articles)
+                content_for_llm = (
+                    self._get_content_from_summaries(source_articles)
+                    if self.args.method == "summaries"
+                    else self._get_content_from_vectorstore(source_articles)
+                )
 
                 # <<< --- IMPROVED PROMPT 1: Daily Source Report --- >>>
                 prompt_template = """
@@ -164,7 +176,7 @@ class ReportGenerator:
                 """
                 report_content = self._generate_markdown_report(
                     prompt_template,
-                    {"date": date, "source": source, "context": content_for_llm}
+                    {"date": date, "source": source, "context": content_for_llm},
                 )
                 with open(report_path, "w", encoding="utf-8") as f:
                     f.write(report_content)
@@ -173,11 +185,17 @@ class ReportGenerator:
             # --- 2. Generate Combined Report for the Date ---
             combined_report_path = output_dir / "daily_summary_report.md"
             if self.args.all and combined_report_path.exists():
-                print(f"⏭️ Skipping existing combined report: {combined_report_path.name}")
+                print(
+                    f"⏭️ Skipping existing combined report: {combined_report_path.name}"
+                )
                 continue
 
             print(f"📈 Generating combined summary for {comp} on {date}...")
-            content_for_llm = self._get_content_from_summaries(articles) if self.args.method == 'summaries' else self._get_content_from_vectorstore(articles)
+            content_for_llm = (
+                self._get_content_from_summaries(articles)
+                if self.args.method == "summaries"
+                else self._get_content_from_vectorstore(articles)
+            )
 
             # <<< --- IMPROVED PROMPT 2: Combined Competition Report --- >>>
             prompt_template = """
@@ -199,7 +217,7 @@ class ReportGenerator:
             """
             report_content = self._generate_markdown_report(
                 prompt_template,
-                {"date": date, "competition": comp, "context": content_for_llm}
+                {"date": date, "competition": comp, "context": content_for_llm},
             )
             with open(combined_report_path, "w", encoding="utf-8") as f:
                 f.write(report_content)
@@ -207,21 +225,37 @@ class ReportGenerator:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate flexible daily and combined sports reports.")
-    
+    parser = argparse.ArgumentParser(
+        description="Generate flexible daily and combined sports reports."
+    )
+
     # --- Filter Arguments ---
-    parser.add_argument("--date", type=str, help="Specify a single date to process (e.g., '25-Οκτωβρίου-2025'). Overrides existing reports for this date.")
-    parser.add_argument("--sport", type=str, help="Filter by a specific sport (e.g., 'basketball').")
-    parser.add_argument("--competition", type=str, help="Filter by a specific competition (e.g., 'euroleague').")
-    
+    parser.add_argument(
+        "--date",
+        type=str,
+        help="Specify a single date to process (e.g., '25-Οκτωβρίου-2025'). Overrides existing reports for this date.",
+    )
+    parser.add_argument(
+        "--sport", type=str, help="Filter by a specific sport (e.g., 'basketball')."
+    )
+    parser.add_argument(
+        "--competition",
+        type=str,
+        help="Filter by a specific competition (e.g., 'euroleague').",
+    )
+
     # --- Mode Arguments ---
-    parser.add_argument("--all", action="store_true", help="Process all dates found. Skips existing reports.")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Process all dates found. Skips existing reports.",
+    )
     parser.add_argument(
         "--method",
         type=str,
         choices=["summaries", "vectorstore"],
         default="summaries",
-        help="Choose the data source method: 'summaries' (fast, from JSON) or 'vectorstore' (slower, from full content)."
+        help="Choose the data source method: 'summaries' (fast, from JSON) or 'vectorstore' (slower, from full content).",
     )
     args = parser.parse_args()
 

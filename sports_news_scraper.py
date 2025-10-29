@@ -8,12 +8,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin
-from vector_store import VectorStoreManager
 
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
+
+from vector_store import VectorStoreManager
 
 GREEK_MONTH_MAP = {
     1: "Ιανουαρίου",
@@ -289,9 +290,9 @@ if __name__ == "__main__":
                 print(f"❌ Source '{source['name']}' encountered an error: {e}")
 
     print("\n✅ All sources scraped successfully.")
-    
+
     manager = VectorStoreManager()
-    
+
     manager.create_or_update(days_back=30)
 
     print("\n✅ Vector store updated successfully.")

@@ -24,12 +24,14 @@ MAX_WORKERS = int(os.getenv("MAX_WORKERS", 4))
 class ArticleProcessor:
     def __init__(self, language: str):
         self.language = language
-        print(f"✅ Initialized ArticleProcessor for language: {self.language} with {MAX_WORKERS} workers.")
+        print(
+            f"✅ Initialized ArticleProcessor for language: {self.language} with {MAX_WORKERS} workers."
+        )
 
     def _summarize_content(self, content: str, llm_client) -> dict:
         parser = JsonOutputParser(pydantic_object=ArticleSummary)
         prompt = ChatPromptTemplate.from_template(
-                """
+            """
                 You are an elite sports journalist and editor. Your entire response MUST be in {language}.
                 Your task is to read the following `Original Article` and produce a final, verified, and comprehensive summary.
                 You must perform all steps internally—analysis, summarization, and fact-checking—before producing a single, perfect JSON output.
@@ -49,8 +51,8 @@ class ArticleProcessor:
                 **Original Article**:
                 ```{content}```
                 """,
-                partial_variables={"format_instructions": parser.get_format_instructions()},
-            )
+            partial_variables={"format_instructions": parser.get_format_instructions()},
+        )
         chain = prompt | llm_client | parser
         return chain.invoke({"content": content, "language": self.language})
 
@@ -58,7 +60,8 @@ class ArticleProcessor:
         """Processes a single article file using the provided LLM clients."""
         try:
             print(f"Processing: {file_path.name}")
-            with open(file_path, "r", encoding="utf-8") as f: data = json.load(f)
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
             content = data.get("article", {}).get("content")
             if not content:
@@ -84,7 +87,7 @@ class ArticleProcessor:
         """Worker function that processes a specific list (chunk) of files."""
         # Create LLM clients ONCE for this thread/worker.
         llm_client = get_llm()
-        
+
         print(f"Worker started, processing a chunk of {len(file_chunk)} files.")
         for file_path in file_chunk:
             self._process_file(file_path, llm_client)
@@ -97,7 +100,8 @@ class ArticleProcessor:
         print(f"🔍 Evaluating LLM Performance for: {file_path.name}")
         print("-" * 50)
 
-        with open(file_path, "r", encoding="utf-8") as f: data = json.load(f)
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
         content = data.get("article", {}).get("content")
         if not content:
             print("❌ Cannot evaluate: No content found in file.")
@@ -121,22 +125,33 @@ class ArticleProcessor:
         vs_manager = VectorStoreManager()
         vs_manager.load()
         if not vs_manager.vector_store:
-            print("❌ Vector store not found. Cannot determine which articles to process.")
+            print(
+                "❌ Vector store not found. Cannot determine which articles to process."
+            )
             return
 
-        all_known_files = [Path(doc.metadata["file_path"]) for doc in vs_manager.vector_store.docstore._dict.values() if "file_path" in doc.metadata]
+        all_known_files = [
+            Path(doc.metadata["file_path"])
+            for doc in vs_manager.vector_store.docstore._dict.values()
+            if "file_path" in doc.metadata
+        ]
         # Step 2: Create a to-do list of files that need summarization.
         files_to_process = []
         for file_path in all_known_files:
             try:
-                with open(file_path, "r", encoding="utf-8") as f: data = json.load(f)
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
                 if "summary" not in data:
                     files_to_process.append(file_path)
             except (FileNotFoundError, json.JSONDecodeError) as e:
-                print(f"⚠️ Skipping file from vector store index due to error: {file_path} ({e})")
+                print(
+                    f"⚠️ Skipping file from vector store index due to error: {file_path} ({e})"
+                )
 
         if not files_to_process:
-            print("✅ All articles in the vector store are already summarized. Nothing to do.")
+            print(
+                "✅ All articles in the vector store are already summarized. Nothing to do."
+            )
             return
 
         print(f"Found {len(files_to_process)} articles needing summarization.")
@@ -146,7 +161,7 @@ class ArticleProcessor:
             num_workers = len(files_to_process)
         else:
             num_workers = MAX_WORKERS
-        
+
         if num_workers == 0:
             return
 
@@ -156,7 +171,7 @@ class ArticleProcessor:
             files_to_process[i : i + chunk_size]
             for i in range(0, len(files_to_process), chunk_size)
         ]
-        
+
         print(f"Splitting work into {len(chunks)} chunks for {num_workers} workers.")
 
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
@@ -167,9 +182,17 @@ class ArticleProcessor:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Summarize, fact-check, and evaluate sports articles.")
-    parser.add_argument("--file", type=Path, help="Path to a single article JSON file to evaluate.")
-    parser.add_argument("--all", action="store_true", help="Process all articles in the raw directory using parallel processing.")
+    parser = argparse.ArgumentParser(
+        description="Summarize, fact-check, and evaluate sports articles."
+    )
+    parser.add_argument(
+        "--file", type=Path, help="Path to a single article JSON file to evaluate."
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Process all articles in the raw directory using parallel processing.",
+    )
     args = parser.parse_args()
 
     processor = ArticleProcessor(language=LANGUAGE)

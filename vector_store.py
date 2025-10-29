@@ -4,13 +4,13 @@ import os
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Set, Dict, Any
+from typing import Any, Dict, List, Optional, Set
 
 from dotenv import load_dotenv
-from langchain_text_splitters import RecursiveCharacterTextSplitter # CORRECTED IMPORT
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_ollama import OllamaEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # ===========================================================
 # Load environment & Configuration
@@ -22,7 +22,7 @@ RAW_DIR = Path(os.getenv("RAW_NEWS_DATA_DIR", "data/raw/news"))
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 1000))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 150))
-BATCH_SIZE = 32 # Number of documents to process in a batch
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", 32))
 
 PROCESSED_FILES_LOG = VECTOR_DIR / "processed_files.log"
 
@@ -31,6 +31,7 @@ class VectorStoreManager:
     """
     Manages the creation, updating, and querying of the FAISS vector store.
     """
+
     def __init__(self):
         self.vector_store: Optional[FAISS] = None
         self.embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
@@ -43,7 +44,6 @@ class VectorStoreManager:
         print(f"✅ Initialized VectorStoreManager with model '{EMBEDDING_MODEL}'.")
         print(f"   Chunk size: {CHUNK_SIZE}, Overlap: {CHUNK_OVERLAP}")
 
-
     def _load_processed_files(self) -> Set[Path]:
         """Loads the set of already processed file paths from a log file."""
         if not PROCESSED_FILES_LOG.exists():
@@ -51,13 +51,11 @@ class VectorStoreManager:
         with open(PROCESSED_FILES_LOG, "r", encoding="utf-8") as f:
             return {Path(line.strip()) for line in f if line.strip()}
 
-
     def _save_processed_files(self, processed_files: Set[Path]) -> None:
         """Saves the set of processed file paths to a log file."""
         with open(PROCESSED_FILES_LOG, "w", encoding="utf-8") as f:
             for file_path in sorted(processed_files):
                 f.write(f"{file_path}\n")
-
 
     def _load_and_chunk_documents(self, days_back: int) -> List[Document]:
         """Loads new JSON files and splits them into chunked Documents."""
@@ -71,8 +69,10 @@ class VectorStoreManager:
 
         all_files = list(RAW_DIR.rglob("*.json"))
         new_files = [
-            f for f in all_files
-            if f not in processed_files and datetime.fromtimestamp(f.stat().st_mtime) >= cutoff_date
+            f
+            for f in all_files
+            if f not in processed_files
+            and datetime.fromtimestamp(f.stat().st_mtime) >= cutoff_date
         ]
 
         if not new_files:
@@ -102,11 +102,13 @@ class VectorStoreManager:
                         "published_date": article.get("date_published", ""),
                         "author": article.get("author", "Unknown"),
                         "processing_status": article.get("processing_status", False),
-                        "file_path": str(file_path)
-                    }
+                        "file_path": str(file_path),
+                    },
                 )
                 # Add the title to the beginning of the content for better context
-                doc.page_content = f"Article Title: {doc.metadata['title']}\n\n{doc.page_content}"
+                doc.page_content = (
+                    f"Article Title: {doc.metadata['title']}\n\n{doc.page_content}"
+                )
 
                 # Split the document into chunks
                 chunks = self.text_splitter.split_documents([doc])
@@ -131,19 +133,23 @@ class VectorStoreManager:
 
         # Add new documents in batches
         for i in range(0, len(new_chunks), BATCH_SIZE):
-            batch = new_chunks[i:i + BATCH_SIZE]
+            batch = new_chunks[i : i + BATCH_SIZE]
             if self.vector_store:
                 self.vector_store.add_documents(batch)
             else:
                 self.vector_store = FAISS.from_documents(batch, self.embeddings)
-            print(f"  ...embedded batch {i//BATCH_SIZE + 1}/{(len(new_chunks) - 1)//BATCH_SIZE + 1}")
+            print(
+                f"  ...embedded batch {i//BATCH_SIZE + 1}/{(len(new_chunks) - 1)//BATCH_SIZE + 1}"
+            )
 
         print("💾 Saving updated vector store to disk...")
         self.vector_store.save_local(str(VECTOR_DIR))
 
         # Update the processed files log
         processed_files = self._load_processed_files()
-        newly_processed_files = {Path(chunk.metadata["file_path"]) for chunk in new_chunks}
+        newly_processed_files = {
+            Path(chunk.metadata["file_path"]) for chunk in new_chunks
+        }
         processed_files.update(newly_processed_files)
         self._save_processed_files(processed_files)
         print("✅ Vector store update complete.")
@@ -152,11 +158,13 @@ class VectorStoreManager:
         """Loads the FAISS index from disk."""
         if self.vector_store:
             return
-        if VECTOR_DIR.exists() and any(VECTOR_DIR.iterdir()): # CORRECTED TYPO
+        if VECTOR_DIR.exists() and any(VECTOR_DIR.iterdir()):  # CORRECTED TYPO
             try:
                 print(f"ℹ️ Loading vector store from {VECTOR_DIR}...")
                 self.vector_store = FAISS.load_local(
-                    str(VECTOR_DIR), self.embeddings, allow_dangerous_deserialization=True
+                    str(VECTOR_DIR),
+                    self.embeddings,
+                    allow_dangerous_deserialization=True,
                 )
             except Exception as e:
                 print(f"❌ Could not load vector store: {e}")
@@ -165,21 +173,25 @@ class VectorStoreManager:
             print("ℹ️ No existing vector store found.")
             self.vector_store = None
 
-    def query(self, query_text: str, k: int = 5, filters: Optional[Dict] = None) -> List[Dict[str, Any]]:
+    def query(
+        self, query_text: str, k: int = 5, filters: Optional[Dict] = None
+    ) -> List[Dict[str, Any]]:
         """Queries the vector store for the most relevant chunks."""
         self.load()
         if not self.vector_store:
             print("❌ Vector store is not available. Cannot query.")
             return []
 
-        results_with_scores = self.vector_store.similarity_search_with_score(query_text, k=k, filter=filters)
+        results_with_scores = self.vector_store.similarity_search_with_score(
+            query_text, k=k, filter=filters
+        )
 
         formatted_results = []
         for doc, score in results_with_scores:
             result = {
                 "score": score,
                 "content": doc.page_content,
-                "metadata": doc.metadata
+                "metadata": doc.metadata,
             }
             formatted_results.append(result)
 
@@ -219,9 +231,9 @@ if __name__ == "__main__":
     manager.create_or_update(days_back=30)
 
     # 2. Example query
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("🚀 Running an example query...")
-    print("="*50)
+    print("=" * 50)
 
     query = "Ποια ομάδα είχε προβλήματα στην άμυνα στα τελευταία παιχνίδια;"
     search_results = manager.query(query, k=3)
