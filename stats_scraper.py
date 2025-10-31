@@ -10,10 +10,7 @@ from typing import Dict, List, Optional, Set, Tuple
 import pandas as pd
 from dotenv import load_dotenv
 from selenium import webdriver
-from selenium.common.exceptions import (
-    NoSuchElementException,
-    TimeoutException,
-)
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -22,9 +19,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
-# Assume this function is available from the other script
-from sports_news_scraper import normalize_and_format_date_to_greek
-
+from sports_news_scraper import (
+    get_date_path_from_greek_date,
+    normalize_and_format_date_to_greek,
+)
 
 # ===========================================================
 # Load environment & Core Config
@@ -40,9 +38,18 @@ COMPETITION_MAPPING = {
 }
 
 REVERSE_GREEK_MONTH_MAP = {
-    "Ιανουαρίου": 1, "Φεβρουαρίου": 2, "Μαρτίου": 3, "Απριλίου": 4,
-    "Μαΐου": 5, "Ιουνίου": 6, "Ιουλίου": 7, "Αυγούστου": 8,
-    "Σεπτεμβρίου": 9, "Οκτωβρίου": 10, "Νοεμβρίου": 11, "Δεκεμβρίου": 12,
+    "Ιανουαρίου": 1,
+    "Φεβρουαρίου": 2,
+    "Μαρτίου": 3,
+    "Απριλίου": 4,
+    "Μαΐου": 5,
+    "Ιουνίου": 6,
+    "Ιουλίου": 7,
+    "Αυγούστου": 8,
+    "Σεπτεμβρίου": 9,
+    "Οκτωβρίου": 10,
+    "Νοεμβρίου": 11,
+    "Δεκεμβρίου": 12,
 }
 
 # --- Environment Variables ---
@@ -71,16 +78,17 @@ RAW_STATS_DATA_DIR.mkdir(parents=True, exist_ok=True)
 # Selenium WebDriver Setup
 # ===========================================================
 
+
 def get_driver_options() -> Options:
     """Configures and returns Chrome options for Selenium."""
     chrome_options = Options()
-    
+
     if RUN_HEADLESS:
         chrome_options.add_argument("--headless=new")
         chrome_options.add_argument("--disable-gpu")
     if RUN_INCOGNITO:
         chrome_options.add_argument("--incognito")
-        
+
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
@@ -102,6 +110,7 @@ def init_driver() -> Tuple[WebDriver, WebDriverWait]:
 # Source Config Loader
 # ===========================================================
 
+
 def load_stats_sources() -> List[Dict]:
     """Reads the config file and returns only sections intended for stats scraping."""
     parser = configparser.ConfigParser()
@@ -118,19 +127,25 @@ def load_stats_sources() -> List[Dict]:
                         comp_url.split("@")[0].strip(),
                         comp_url.split("@")[1].strip().rstrip("/"),
                     )
-                    for comp_url in parser.get(section, "COMPETITION_URLS", fallback="").split(",")
+                    for comp_url in parser.get(
+                        section, "COMPETITION_URLS", fallback=""
+                    ).split(",")
                     if "@" in comp_url
                 ]
 
                 if not competition_urls:
-                    print(f"⚠️ No valid COMPETITION_URLS found for source {name}. Skipping.")
+                    print(
+                        f"⚠️ No valid COMPETITION_URLS found for source {name}. Skipping."
+                    )
                     continue
 
-                stats_sources.append({
-                    "name": name,
-                    "competition_urls": competition_urls,
-                    "section": section,
-                })
+                stats_sources.append(
+                    {
+                        "name": name,
+                        "competition_urls": competition_urls,
+                        "section": section,
+                    }
+                )
             except Exception as e:
                 print(f"❌ Error parsing COMPETITION_URLS in section {section}: {e}")
                 continue
@@ -140,6 +155,7 @@ def load_stats_sources() -> List[Dict]:
 # ===========================================================
 # Utility Functions
 # ===========================================================
+
 
 def convert_greek_date_to_numeric(greek_date_str: str) -> Optional[str]:
     """Converts a Greek date string (e.g., '22 Οκτωβρίου 2025') to DD.MM.YYYY."""
@@ -182,59 +198,19 @@ def normalize_and_format_date(date_string: str) -> str:
         if re.match(r"^\d{2}\.\d{2}\.\d{4}$", date_string):
             return date_string
 
-        # Try to convert from full Greek date string as a fallback
-        numeric_date = convert_greek_date_to_numeric(date_string)
-        return numeric_date if numeric_date else date_string
-
     except (ValueError, IndexError):
         print(f"⚠️ Could not normalize date string: {date_string}")
         return date_string
 
 
-def get_target_dates(sport: str, competition: str) -> Set[str]:
-    """
-    Gets all unique date folder names from the news data (Greek format)
-    and converts them to the standardized DD.MM.YYYY format for filtering.
-    """
-    base_path = RAW_NEWS_DATA_DIR / sport / competition
-    if not base_path.exists():
-        return set()
-
-    # 1. Get raw Greek folder names
-    raw_target_dates = {d.name for d in base_path.iterdir() if d.is_dir()}
-
-    # 2. Convert raw Greek dates to numeric DD.MM.YYYY format
-    numeric_target_dates = set()
-    for raw_date in raw_target_dates:
-        numeric_date = convert_greek_date_to_numeric(raw_date)
-        if numeric_date:
-            numeric_target_dates.add(numeric_date)
-
-    if not numeric_target_dates:
-        print(
-            f"  ⚠️ No news dates found for {sport}/{competition}. Stats will be filtered, but the target list is empty."
-        )
-    else:
-        print(
-            f"  🎯 Found {len(numeric_target_dates)} news dates (DD.MM.YYYY) to target for {sport}/{competition} stats."
-        )
-    return numeric_target_dates
-
-
 def save_stats_csv(
-    df: pd.DataFrame,
-    sport: str,
-    competition: str,
-    date_folder_parts: Tuple[str, str, str],
-    filename: str
+    df: pd.DataFrame, sport: str, competition: str, date_folder_part: str, filename: str
 ):
     """Saves a DataFrame to the new directory structure: .../{year}/{month}/{day}/"""
     try:
-        year, month, day = date_folder_parts
-        
-        output_dir = RAW_STATS_DATA_DIR / sport / competition / year / month / day
+        output_dir = RAW_STATS_DATA_DIR / sport / competition / date_folder_part
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Filename is already pre-sanitized by the calling function
         output_path = output_dir / filename
         df.to_csv(output_path, index=False, encoding="utf-8")
@@ -247,11 +223,16 @@ def save_stats_csv(
 # Statistics Scraping Logic (Basketball)
 # ===========================================================
 
-def scrape_basketball_stats(driver: WebDriver, wait: WebDriverWait) -> Optional[pd.DataFrame]:
+
+def scrape_basketball_stats(
+    driver: WebDriver, wait: WebDriverWait
+) -> Optional[pd.DataFrame]:
     """Scrapes the player stats table for a basketball match."""
     try:
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".playerStatsTable")))
-        
+        wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".playerStatsTable"))
+        )
+
         headers = ["Παίκτης", "Ομάδα"]
         all_rows = []
 
@@ -284,6 +265,7 @@ def scrape_basketball_stats(driver: WebDriver, wait: WebDriverWait) -> Optional[
 # Statistics Scraping Logic (Football)
 # ===========================================================
 
+
 def _scrape_football_team_stats(
     driver: WebDriver, wait: WebDriverWait, team_alias: str, team_name: str
 ) -> List[List[str]]:
@@ -292,12 +274,14 @@ def _scrape_football_team_stats(
     try:
         # Click the 'HOME' or 'AWAY' button
         team_button = wait.until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, f'div[data-analytics-alias="{team_alias}"]'))
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, f'div[data-analytics-alias="{team_alias}"]')
+            )
         )
         team_button.click()
-        
+
         # Wait for table body to update (slight pause)
-        time.sleep(UI_INTERACTION_DELAY) 
+        time.sleep(UI_INTERACTION_DELAY)
 
         table_body = driver.find_element(By.TAG_NAME, "tbody")
         rows = table_body.find_elements(By.TAG_NAME, "tr")
@@ -305,10 +289,10 @@ def _scrape_football_team_stats(
         for row in rows:
             cells = row.find_elements(By.TAG_NAME, "td")
             player_row = [cell.text for cell in cells]
-            
+
             # Add team name
             player_row.append(team_name)
-            
+
             # Split "Name\nPosition" into two columns
             try:
                 name, position = player_row[0].split("\n")
@@ -316,11 +300,13 @@ def _scrape_football_team_stats(
                 player_row.append(position)
                 team_rows.append(player_row)
             except (ValueError, IndexError):
-                print(f"    ⚠️ Could not parse player name/position for row: {player_row}")
-                
+                print(
+                    f"    ⚠️ Could not parse player name/position for row: {player_row}"
+                )
+
     except Exception as e:
         print(f"    ❌ Error scraping stats for team {team_name} ({team_alias}): {e}")
-    
+
     return team_rows
 
 
@@ -330,7 +316,7 @@ def scrape_football_stats(
     """Scrapes the player stats table for a football match by cycling through Home/Away."""
     try:
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "table")))
-        
+
         headers = []
         all_rows = []
 
@@ -341,28 +327,32 @@ def scrape_football_stats(
             title = header.text.strip()
             if title:
                 headers.append(title)
-        
+
         # Manually correct/add headers
         headers[0] = "Όνομα"
         headers.append("Ομάδα")
         headers.append("Θέση")
 
-        # Click to open dropdown
-        header_buttons[0].click()
-        time.sleep(UI_INTERACTION_DELAY) # Wait for dropdown
-
         # Scrape Home Team
-        home_rows = _scrape_football_team_stats(driver, wait, "HOME", match_data["home_team"])
+        header_buttons[0].click()  # Click to open dropdown
+        time.sleep(UI_INTERACTION_DELAY)  # Wait for dropdown
+        home_rows = _scrape_football_team_stats(
+            driver, wait, "HOME", match_data["home_team"]
+        )
         all_rows.extend(home_rows)
 
         # Scrape Away Team
-        header_buttons[0].click() # Re-click to open dropdown
+        header_buttons[0].click()  # Re-click to open dropdown
         time.sleep(UI_INTERACTION_DELAY)
-        away_rows = _scrape_football_team_stats(driver, wait, "AWAY", match_data["away_team"])
+        away_rows = _scrape_football_team_stats(
+            driver, wait, "AWAY", match_data["away_team"]
+        )
         all_rows.extend(away_rows)
 
         if not all_rows:
-            print(f"    ⚠️ No football stats rows found for match: {match_data['filename']}")
+            print(
+                f"    ⚠️ No football stats rows found for match: {match_data['filename']}"
+            )
             return None
 
         df = pd.DataFrame(all_rows, columns=headers)
@@ -377,7 +367,10 @@ def scrape_football_stats(
 # Match & Competition Scraping Logic
 # ===========================================================
 
-def get_match_list(driver: WebDriver, wait: WebDriverWait, base_url: str, sport: str) -> List[Dict]:
+
+def get_match_list(
+    driver: WebDriver, wait: WebDriverWait, base_url: str, sport: str
+) -> List[Dict]:
     """Fetches the main competition page and scrapes the list of matches."""
     match_data_list = []
     try:
@@ -405,45 +398,42 @@ def get_match_list(driver: WebDriver, wait: WebDriverWait, base_url: str, sport:
         match_elements = driver.find_elements(By.CSS_SELECTOR, ".event__match")
         print(f"  Found {len(match_elements)} match containers on page.")
 
-        # TODO: Date filtering is disabled as per original script's commented-out state.
-        # To enable, uncomment the next 2 lines and the filter block below.
-        # target_dates = get_target_dates(sport, competition)
-        # if not target_dates: ...
-
         for match_el in match_elements:
             try:
-                date_text = match_el.find_element(By.CSS_SELECTOR, ".event__time").text.strip()
+                date_text = match_el.find_element(
+                    By.CSS_SELECTOR, ".event__time"
+                ).text.strip()
                 match_date = normalize_and_format_date(date_text)
-                
+
                 # This converts DD.MM.YYYY to "DD <MonthName> YYYY" for folder naming
                 greek_match_date = normalize_and_format_date_to_greek(match_date)
-
-                # Parse Greek date for folder structure
-                date_parts = greek_match_date.split()
-                if len(date_parts) == 3:
-                    day, month_name, year = date_parts[0], date_parts[1], date_parts[2]
-                else:
-                    print(f"    ⚠️ Could not parse Greek date '{greek_match_date}'. Using 'unknown' folders.")
-                    day, month_name, year = "unknown", "unknown", "unknown"
-
-                # TODO: This filter is disabled to match the original script's functionality.
-                # if match_date not in target_dates:
-                #     print(f"    Skipping match on {match_date} (not in target dates).")
-                #     continue
+                date_folder_part = get_date_path_from_greek_date(greek_match_date)
 
                 # Get team names (selectors differ by sport)
                 if sport == "basketball":
-                    home_team_el = match_el.find_element(By.CSS_SELECTOR, ".event__participant--home")
-                    away_team_el = match_el.find_element(By.CSS_SELECTOR, ".event__participant--away")
+                    home_team_el = match_el.find_element(
+                        By.CSS_SELECTOR, ".event__participant--home"
+                    )
+                    away_team_el = match_el.find_element(
+                        By.CSS_SELECTOR, ".event__participant--away"
+                    )
                 else:  # football
-                    home_team_el = match_el.find_element(By.CSS_SELECTOR, ".event__homeParticipant")
-                    away_team_el = match_el.find_element(By.CSS_SELECTOR, ".event__awayParticipant")
-                
-                home_team = home_team_el.text.strip()
-                away_team = away_team_el.text.strip()
-                
-                home_score = match_el.find_element(By.CSS_SELECTOR, ".event__score--home").text.strip()
-                away_score = match_el.find_element(By.CSS_SELECTOR, ".event__score--away").text.strip()
+                    home_team_el = match_el.find_element(
+                        By.CSS_SELECTOR, ".event__homeParticipant"
+                    )
+                    away_team_el = match_el.find_element(
+                        By.CSS_SELECTOR, ".event__awayParticipant"
+                    )
+
+                home_team = re.sub(r"\s*\(.*\)", "", home_team_el.text.rstrip())
+                away_team = re.sub(r"\s*\(.*\)", "", away_team_el.text.rstrip())
+
+                home_score = match_el.find_element(
+                    By.CSS_SELECTOR, ".event__score--home"
+                ).text.strip()
+                away_score = match_el.find_element(
+                    By.CSS_SELECTOR, ".event__score--away"
+                ).text.strip()
 
                 link_el = match_el.find_element(By.TAG_NAME, "a")
                 match_path = link_el.get_attribute("href")
@@ -452,19 +442,25 @@ def get_match_list(driver: WebDriver, wait: WebDriverWait, base_url: str, sport:
 
                 # Build stats URL based on sport
                 if sport == "basketball":
-                    stats_url = match_path.replace("/?mid=", "/summary/player-stats/overall/?mid=")
+                    stats_url = match_path.replace(
+                        "/?mid=", "/summary/player-stats/overall/?mid="
+                    )
                 else:
-                    stats_url = match_path.replace("/?mid=", "/summary/player-stats/top/?mid=")
-                
-                print(f"    → Found match: {home_team} vs {away_team} ({greek_match_date})")
-                
+                    stats_url = match_path.replace(
+                        "/?mid=", "/summary/player-stats/top/?mid="
+                    )
+
+                print(
+                    f"    → Found match: {home_team} vs {away_team} ({greek_match_date})"
+                )
+
                 match_data = {
                     "filename": f"{home_team}-{away_team}~~~{home_score}-{away_score}.csv",
                     "home_team": home_team,
                     "away_team": away_team,
-                    "date_folder_parts": (year, month_name, day), # Tuple for saving
+                    "date_folder_part": date_folder_part,
                     "stats_url": stats_url,
-                    "sport": sport
+                    "sport": sport,
                 }
                 match_data_list.append(match_data)
 
@@ -488,7 +484,7 @@ def scrape_match_stats_in_new_tab(
     """
     stats_url = match_data["stats_url"]
     sport = match_data["sport"]
-    
+
     try:
         # Open and switch to new tab
         driver.execute_script("window.open('');")
@@ -504,7 +500,7 @@ def scrape_match_stats_in_new_tab(
         else:
             print(f"    ⚠️ Unknown sport '{sport}', cannot scrape stats.")
             df = None
-        
+
         return df
 
     except Exception as e:
@@ -521,7 +517,7 @@ def scrape_match_stats_in_new_tab(
             # If window switching fails, we might be in a bad state.
             # Force switch back to main, if it still exists.
             if main_window in driver.window_handles:
-                 driver.switch_to.window(main_window)
+                driver.switch_to.window(main_window)
             else:
                 # This is bad, the main window might be gone.
                 # The driver.quit() in the outer function will handle cleanup.
@@ -541,30 +537,37 @@ def scrape_single_competition(task: Tuple[str, str, str]):
     try:
         # 1. Get all matches from the competition's main page
         match_data_list = get_match_list(driver, wait, base_url, sport)
-        
+
         if not match_data_list:
             print(f"  ⚠️ No matches found for {sport}/{competition}. Skipping.")
             return
-        
+
         main_window = driver.current_window_handle
-        
+
         # 2. Process each match in a new tab
         for i, match_data in enumerate(match_data_list):
             filename = match_data["filename"]
-            year, month, day = match_data["date_folder_parts"]
 
             # Sanitize filename once
             safe_filename = re.sub(r'[<>:"/\\|?*]', "_", filename)
-            
+
             # --- Check if file already exists ---
-            expected_path = RAW_STATS_DATA_DIR / sport / competition / year / month / day / safe_filename
+            expected_path = (
+                RAW_STATS_DATA_DIR
+                / sport
+                / competition
+                / match_data["date_folder_part"]
+                / safe_filename
+            )
             if expected_path.exists():
-                print(f"  Skipping {i+1}/{len(match_data_list)} (already exists): {safe_filename}")
+                print(
+                    f"  Skipping {i+1}/{len(match_data_list)} (already exists): {safe_filename}"
+                )
                 continue
             # ------------------------------------
 
             print(f"  Processing {i+1}/{len(match_data_list)}: {safe_filename}")
-            
+
             df_stats = scrape_match_stats_in_new_tab(driver, main_window, match_data)
 
             # 3. Save the results
@@ -573,14 +576,16 @@ def scrape_single_competition(task: Tuple[str, str, str]):
                     df_stats,
                     sport,
                     competition,
-                    match_data["date_folder_parts"],
+                    match_data["date_folder_part"],
                     safe_filename,
                 )
             else:
                 print(f"    ⚠️ No stats DataFrame returned for {safe_filename}")
 
     except Exception as e:
-        print(f"  ❌ A fatal error occurred during scrape for {sport}/{competition}: {e}")
+        print(
+            f"  ❌ A fatal error occurred during scrape for {sport}/{competition}: {e}"
+        )
     finally:
         driver.quit()
         print(f"Browser closed for {sport}/{competition}.")
@@ -628,9 +633,7 @@ if __name__ == "__main__":
                 future.result()  # Get result (or raise exception)
                 print(f"✅ Task '{sport}/{competition}' thread completed.")
             except Exception as e:
-                print(
-                    f"❌ Task '{sport}/{competition}' encountered a fatal error: {e}"
-                )
+                print(f"❌ Task '{sport}/{competition}' encountered a fatal error: {e}")
 
     print("\n" + "=" * 50)
     print("✅ All stats scraping tasks completed.")

@@ -16,6 +16,7 @@ from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
 from vector_store import VectorStoreManager
 
+# Used for display dates (e.g., "22 Οκτωβρίου 2025")
 GREEK_MONTH_MAP = {
     1: "Ιανουαρίου",
     2: "Φεβρουαρίου",
@@ -29,6 +30,22 @@ GREEK_MONTH_MAP = {
     10: "Οκτωβρίου",
     11: "Νοεμβρίου",
     12: "Δεκεμβρίου",
+}
+
+# Used for directory names (e.g., "data/raw/news/football/champions-league/2025/Οκτώβριος/22")
+GREEK_MONTH_NOMINATIVE_MAP = {
+    "Ιανουαρίου": "Ιανουάριος",
+    "Φεβρουαρίου": "Φεβρουάριος",
+    "Μαρτίου": "Μάρτιος",
+    "Απριλίου": "Απρίλιος",
+    "Μαΐου": "Μάιος",
+    "Ιουνίου": "Ιούνιος",
+    "Ιουλίου": "Ιούλιος",
+    "Αυγούστου": "Αύγουστος",
+    "Σεπτεμβρίου": "Σεπτέμβριος",
+    "Οκτωβρίου": "Οκτώβριος",
+    "Νοεμβρίου": "Νοέμβριος",
+    "Δεκεμβρίου": "Δεκέμβριος",
 }
 
 
@@ -79,12 +96,17 @@ def load_sources():
         if "NEWS_SOURCE" in section.upper():
             name = parser.get(section, "NAME", fallback=section)
             competition_urls = [
-                (competition_url.split("@")[0], competition_url.split("@")[1].rstrip("/"))
+                (
+                    competition_url.split("@")[0],
+                    competition_url.split("@")[1].rstrip("/"),
+                )
                 for competition_url in parser.get(
                     section, "COMPETITION_URLS", fallback=""
                 ).split(",")
             ]
-            separator_str = str(parser.get(section, "DATETIME_SEPARATOR", fallback=None))
+            separator_str = str(
+                parser.get(section, "DATETIME_SEPARATOR", fallback=None)
+            )
             separator = separator_str.replace('"', "")
             selectors = {
                 "list": parser.get(section, "LIST", fallback=None),
@@ -95,7 +117,11 @@ def load_sources():
                 "content": parser.get(section, "CONTENT", fallback=None),
             }
             sources.append(
-                {"name": name, "competition_urls": competition_urls, "selectors": selectors}
+                {
+                    "name": name,
+                    "competition_urls": competition_urls,
+                    "selectors": selectors,
+                }
             )
     return sources
 
@@ -160,6 +186,11 @@ def normalize_and_format_date_to_greek(date_string: str) -> str:
         return date_string
 
 
+def get_date_path_from_greek_date(date_string: str) -> str:
+    day, month, year = date_string.split(" ")
+    return f"{year}/{GREEK_MONTH_NOMINATIVE_MAP[month]}/{day}"
+
+
 # ===========================================================
 # Scraper Logic
 # ===========================================================
@@ -197,7 +228,7 @@ def scrape_article_page(article_url: str, selectors: dict):
 
 
 def save_article(article: dict, source: str, sport: str, competition: str):
-    date_folder = article.get("date_published") or "unknown"
+    date_folder = get_date_path_from_greek_date(article["date_published"])
     folder = RAW_NEWS_DATA_DIR / sport / competition / date_folder / source
     folder.mkdir(parents=True, exist_ok=True)
 
