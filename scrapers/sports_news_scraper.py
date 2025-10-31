@@ -2,7 +2,6 @@ import configparser
 import json
 import os
 import random
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -14,7 +13,11 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
-from vector_store import VectorStoreManager
+from utils import (
+    clean_html_text,
+    get_date_path_from_greek_date,
+    normalize_and_format_date_to_greek,
+)
 
 # Used for display dates (e.g., "22 Οκτωβρίου 2025")
 GREEK_MONTH_MAP = {
@@ -131,64 +134,11 @@ def load_sources():
 # ===========================================================
 
 
-def clean_html_text(element):
-    if not element:
-        return ""
-    for tag in element.find_all(["strong", "em", "a", "span", "p", "div", "br"]):
-        if tag.next_sibling and not str(tag.next_sibling).startswith(" "):
-            tag.insert_after(" ")
-    return " ".join(element.get_text(separator=" ", strip=True).split())
-
-
 def list_article_files(sport: str, competition: str):
     base_path = RAW_NEWS_DATA_DIR / sport / competition
     if not base_path.exists():
         return []
     return [f.name for f in base_path.rglob("*.json")]
-
-
-def normalize_and_format_date_to_greek(date_string: str) -> str:
-    """
-    Parses various date formats (DD/MM/YYYY, MM/DD/YYYY with /.- separators),
-    standardizes them, and optionally translates to a target language.
-    """
-    try:
-        # Step 1: Split the date string by any common separator
-        parts = re.split(r"[/.-]", date_string.strip())
-        if len(parts) != 3:
-            # If it's not a recognizable structure, return original
-            return date_string
-
-        p1, p2, p3 = map(int, parts)
-
-        # Step 2: Intelligently determine the date format (DMY vs MDY)
-        # This heuristic assumes if a value > 12, it must be the day.
-        if p1 > 12:  # Format is likely Day/Month/Year
-            day, month, year = p1, p2, p3
-        elif p2 > 12:  # Format is likely Month/Day/Year
-            month, day, year = p1, p2, p3
-        else:
-            # Ambiguous (e.g., 04.05.2025). Assume Day/Month/Year as it's common in Greece/Europe.
-            day, month, year = p1, p2, p3
-
-        # Ensure year is four digits
-        if year < 2000:
-            year += 2000
-
-        # Step 3: Create a datetime object for validation and formatting
-        dt_obj = datetime(year, month, day)
-
-        # Step 4: Format the date based on the Greek language
-        return f"{dt_obj.day} {GREEK_MONTH_MAP[dt_obj.month]} {dt_obj.year}"
-
-    except (ValueError, IndexError, KeyError):
-        # If any parsing fails, return the original string to avoid crashing
-        return date_string
-
-
-def get_date_path_from_greek_date(date_string: str) -> str:
-    day, month, year = date_string.split(" ")
-    return f"{year}/{GREEK_MONTH_NOMINATIVE_MAP[month]}/{day}"
 
 
 # ===========================================================
@@ -203,12 +153,12 @@ def scrape_article_page(article_url: str, selectors: dict):
         res.raise_for_status()
         soup = BeautifulSoup(res.text, "lxml")
 
-        title = clean_html_text(soup.select_one(selectors.get("title")))
-        author = clean_html_text(soup.select_one(selectors.get("author")))
-        date = clean_html_text(soup.select_one(selectors.get("date")))
-        date_published = date.split(selectors.get("datetime_separator"))[0]
+        title = clean_html_text(soup.select_one(selectors["title"]))
+        author = clean_html_text(soup.select_one(selectors["author"]))
+        date = clean_html_text(soup.select_one(selectors["date"]))
+        date_published = date.split(selectors["datetime_separator"])[0]
         date_published = normalize_and_format_date_to_greek(date_published)
-        content = clean_html_text(soup.select_one(selectors.get("content")))
+        content = clean_html_text(soup.select_one(selectors["content"]))
 
         if not content.strip():
             print("   ⚠️ Empty content, skipping.")
@@ -322,9 +272,3 @@ if __name__ == "__main__":
                 print(f"❌ Source '{source['name']}' encountered an error: {e}")
 
     print("\n✅ All sources scraped successfully.")
-
-    manager = VectorStoreManager()
-
-    manager.create_or_update(days_back=30)
-
-    print("\n✅ Vector store updated successfully.")

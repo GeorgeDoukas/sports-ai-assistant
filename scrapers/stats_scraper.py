@@ -5,7 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -19,7 +19,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
-from sports_news_scraper import (
+from utils import (
     get_date_path_from_greek_date,
     normalize_and_format_date_to_greek,
 )
@@ -155,28 +155,6 @@ def load_stats_sources() -> List[Dict]:
 # ===========================================================
 # Utility Functions
 # ===========================================================
-
-
-def convert_greek_date_to_numeric(greek_date_str: str) -> Optional[str]:
-    """Converts a Greek date string (e.g., '22 Οκτωβρίου 2025') to DD.MM.YYYY."""
-    try:
-        parts = greek_date_str.split()
-        if len(parts) != 3:
-            return None
-
-        day = int(parts[0])
-        month_name = parts[1]
-        year = int(parts[2])
-
-        month = REVERSE_GREEK_MONTH_MAP.get(month_name)
-        if not month:
-            return None
-
-        # Return DD.MM.YYYY format with leading zeros
-        return f"{day:02d}.{month:02d}.{year}"
-    except (ValueError, IndexError):
-        print(f"⚠️ Could not parse Greek date string: {greek_date_str}")
-        return None
 
 
 def normalize_and_format_date(date_string: str) -> str:
