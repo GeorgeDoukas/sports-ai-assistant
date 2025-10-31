@@ -76,26 +76,27 @@ def load_sources():
 
     sources = []
     for section in parser.sections():
-        name = parser.get(section, "NAME", fallback=section)
-        competition_urls = [
-            (competition_url.split("@")[0], competition_url.split("@")[1].rstrip("/"))
-            for competition_url in parser.get(
-                section, "COMPETITION_URLS", fallback=""
-            ).split(",")
-        ]
-        separator_str = str(parser.get(section, "DATETIME_SEPARATOR", fallback=None))
-        separator = separator_str.replace('"', "")
-        selectors = {
-            "list": parser.get(section, "LIST", fallback=None),
-            "title": parser.get(section, "TITLE", fallback=None),
-            "author": parser.get(section, "AUTHOR", fallback=None),
-            "date": parser.get(section, "DATE", fallback=None),
-            "datetime_separator": separator,
-            "content": parser.get(section, "CONTENT", fallback=None),
-        }
-        sources.append(
-            {"name": name, "competition_urls": competition_urls, "selectors": selectors}
-        )
+        if "NEWS_SOURCE" in section.upper():
+            name = parser.get(section, "NAME", fallback=section)
+            competition_urls = [
+                (competition_url.split("@")[0], competition_url.split("@")[1].rstrip("/"))
+                for competition_url in parser.get(
+                    section, "COMPETITION_URLS", fallback=""
+                ).split(",")
+            ]
+            separator_str = str(parser.get(section, "DATETIME_SEPARATOR", fallback=None))
+            separator = separator_str.replace('"', "")
+            selectors = {
+                "list": parser.get(section, "LIST", fallback=None),
+                "title": parser.get(section, "TITLE", fallback=None),
+                "author": parser.get(section, "AUTHOR", fallback=None),
+                "date": parser.get(section, "DATE", fallback=None),
+                "datetime_separator": separator,
+                "content": parser.get(section, "CONTENT", fallback=None),
+            }
+            sources.append(
+                {"name": name, "competition_urls": competition_urls, "selectors": selectors}
+            )
     return sources
 
 
@@ -120,7 +121,7 @@ def list_article_files(sport: str, competition: str):
     return [f.name for f in base_path.rglob("*.json")]
 
 
-def normalize_and_format_date(date_string: str) -> str:
+def normalize_and_format_date_to_greek(date_string: str) -> str:
     """
     Parses various date formats (DD/MM/YYYY, MM/DD/YYYY with /.- separators),
     standardizes them, and optionally translates to a target language.
@@ -175,7 +176,7 @@ def scrape_article_page(article_url: str, selectors: dict):
         author = clean_html_text(soup.select_one(selectors.get("author")))
         date = clean_html_text(soup.select_one(selectors.get("date")))
         date_published = date.split(selectors.get("datetime_separator"))[0]
-        date_published = normalize_and_format_date(date_published)
+        date_published = normalize_and_format_date_to_greek(date_published)
         content = clean_html_text(soup.select_one(selectors.get("content")))
 
         if not content.strip():
