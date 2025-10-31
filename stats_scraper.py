@@ -46,11 +46,22 @@ REVERSE_GREEK_MONTH_MAP = {
 }
 
 # --- Environment Variables ---
+# File Paths
 RAW_NEWS_DATA_DIR = Path(os.getenv("RAW_NEWS_DATA_DIR", "data/raw/news"))
 RAW_STATS_DATA_DIR = Path(os.getenv("RAW_STATS_DATA_DIR", "data/raw/stats"))
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "4"))
 SOURCES_FILE = os.getenv("SOURCES_FILE", ".env")
-WEBDRIVER_WAIT_TIMEOUT = 15
+
+# Performance
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "4"))
+WEBDRIVER_WAIT_TIMEOUT = int(os.getenv("WEBDRIVER_WAIT_TIMEOUT", "15"))
+PAGE_LOAD_DELAY = float(os.getenv("PAGE_LOAD_DELAY", "2"))
+TAB_SWITCH_DELAY = float(os.getenv("TAB_SWITCH_DELAY", "1"))
+UI_INTERACTION_DELAY = float(os.getenv("UI_INTERACTION_DELAY", "0.5"))
+
+# Browser Settings
+RUN_HEADLESS = os.getenv("RUN_HEADLESS", "false").lower() == "true"
+RUN_INCOGNITO = os.getenv("RUN_INCOGNITO", "true").lower() == "true"
+
 
 # Ensure the base stats directory exists
 RAW_STATS_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -63,8 +74,13 @@ RAW_STATS_DATA_DIR.mkdir(parents=True, exist_ok=True)
 def get_driver_options() -> Options:
     """Configures and returns Chrome options for Selenium."""
     chrome_options = Options()
-    # chrome_options.add_argument("--headless")  # Uncomment to run headlessly
-    chrome_options.add_argument("--incognito")  # Open in incognito mode
+    
+    if RUN_HEADLESS:
+        chrome_options.add_argument("--headless=new")
+        chrome_options.add_argument("--disable-gpu")
+    if RUN_INCOGNITO:
+        chrome_options.add_argument("--incognito")
+        
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
@@ -281,7 +297,7 @@ def _scrape_football_team_stats(
         team_button.click()
         
         # Wait for table body to update (slight pause)
-        time.sleep(0.5) 
+        time.sleep(UI_INTERACTION_DELAY) 
 
         table_body = driver.find_element(By.TAG_NAME, "tbody")
         rows = table_body.find_elements(By.TAG_NAME, "tr")
@@ -333,7 +349,7 @@ def scrape_football_stats(
 
         # Click to open dropdown
         header_buttons[0].click()
-        time.sleep(0.5) # Wait for dropdown
+        time.sleep(UI_INTERACTION_DELAY) # Wait for dropdown
 
         # Scrape Home Team
         home_rows = _scrape_football_team_stats(driver, wait, "HOME", match_data["home_team"])
@@ -341,7 +357,7 @@ def scrape_football_stats(
 
         # Scrape Away Team
         header_buttons[0].click() # Re-click to open dropdown
-        time.sleep(0.5)
+        time.sleep(UI_INTERACTION_DELAY)
         away_rows = _scrape_football_team_stats(driver, wait, "AWAY", match_data["away_team"])
         all_rows.extend(away_rows)
 
@@ -366,7 +382,7 @@ def get_match_list(driver: WebDriver, wait: WebDriverWait, base_url: str, sport:
     match_data_list = []
     try:
         driver.get(base_url)
-        time.sleep(2)  # Initial load
+        time.sleep(PAGE_LOAD_DELAY)  # Initial load
     except Exception as e:
         print(f"  ❌ Failed to load base URL {base_url}: {e}")
         return []
@@ -434,7 +450,7 @@ def get_match_list(driver: WebDriver, wait: WebDriverWait, base_url: str, sport:
                 if not match_path:
                     continue
 
-                # Build stats URL
+                # Build stats URL based on sport
                 if sport == "basketball":
                     stats_url = match_path.replace("/?mid=", "/summary/player-stats/overall/?mid=")
                 else:
@@ -499,7 +515,7 @@ def scrape_match_stats_in_new_tab(
         try:
             driver.close()
             driver.switch_to.window(main_window)
-            time.sleep(1)  # Brief pause
+            time.sleep(TAB_SWITCH_DELAY)  # Brief pause
         except Exception as e:
             print(f"    ❌ Error closing tab or switching window: {e}")
             # If window switching fails, we might be in a bad state.
