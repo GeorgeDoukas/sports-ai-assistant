@@ -10,7 +10,7 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 from llm_services import LANGUAGE, ArticleSummary, get_llm
-from vector_store import VectorStoreManager
+from storage.vector_store import VectorStoreManager
 
 # --- Configuration ---
 load_dotenv()
