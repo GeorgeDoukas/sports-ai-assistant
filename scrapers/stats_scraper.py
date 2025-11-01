@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 from selenium import webdriver
@@ -17,12 +18,11 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-from webdriver_manager.chrome import ChromeDriverManager
-
 from utils import (
     get_date_path_from_greek_date,
     normalize_and_format_date_to_greek,
 )
+from webdriver_manager.chrome import ChromeDriverManager
 
 # ===========================================================
 # Load environment & Core Config
@@ -181,6 +181,100 @@ def normalize_and_format_date(date_string: str) -> str:
         return date_string
 
 
+def clean_stats_dataframe(df: pd.DataFrame, sport: str) -> pd.DataFrame:
+    """
+    Cleans a stats DataFrame by:
+        - Replaces '-' etc. with NaN
+        - Converts numeric columns to float
+        - Fills NaN in numeric columns with 0
+        - Reorders football columns: Όνομα, Ομάδα, Θέση, ...
+    """
+    df = df.copy()
+
+    # Replace '-' and empty strings with NaN
+    df.replace(["-", "–", "—", "", "N/A", "null"], np.nan, inplace=True)
+
+    if sport == "basketball":
+        # Basketball-specific numeric columns
+        numeric_columns = [
+            "Πόντοι",
+            "Σύνολο ριμπάουντ",
+            "Ασίστς",
+            "Επιθετικά ριμπάουντ",
+            "Αμυντικά ριμπάουντ",
+            "Προσωπικά φάουλ",
+            "Κλεψίματα",
+            "Λάθη",
+            "Μπλοκς",
+            "Μπλοκς κατά",
+            "Τεχνικές Ποινές",
+            "+/- Πόντοι",
+            "Εύστοχες ελεύθερες βολές",
+            "Ελεύθερες βολές",
+            "Ευστοχα σουτ εντός πεδιάς",
+            "Σουτ εντός πεδιάς",
+            "Ευστοχα σουτ 2π εντός πεδιάς",
+            "Σουτ 2π εντός πεδιάς",
+            "Ευστοχα σουτ 3π εντός πεδιάς",
+            "Σουτ 3π εντός πεδιάς",
+        ]
+
+        # Handle "Λεπτά που παίχτηκαν" separately (MM:SS format)
+        if "Λεπτά που παίχτηκαν" in df.columns:
+
+            def convert_minutes_to_float(time_str):
+                if pd.isna(time_str):
+                    return 0.0
+                try:
+                    if ":" in str(time_str):
+                        mins, _ = map(int, str(time_str).split(":"))
+                        return float(mins)
+                    else:
+                        return float(time_str)
+                except Exception:
+                    return 0.0
+
+            df["Λεπτά που παίχτηκαν"] = df["Λεπτά που παίχτηκαν"].apply(
+                convert_minutes_to_float
+            )
+
+        # Convert other numeric columns
+        for col in numeric_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    elif sport == "football":
+        # Football-specific cleaning
+        numeric_columns = [
+            "Αξιολόγηση παίκτη",
+            "Συνολικά Σουτ",
+            "Αναμενόμενα γκολ (xG)",
+        ]
+
+        # Convert known numeric columns
+        for col in numeric_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+        # Reorder football columns: Όνομα, Ομάδα, Θέση, ...
+        required_cols = ["Όνομα", "Ομάδα", "Θέση"]
+        if all(col in df.columns for col in required_cols):
+            other_cols = [col for col in df.columns if col not in required_cols]
+            new_order = ["Όνομα", "Ομάδα", "Θέση"] + other_cols
+            df = df[new_order]
+
+        # Optional: Parse percentage columns like "Επιτυχημένες Πάσες" → keep as string or extract number
+        # For now, we leave them as strings since they contain "17/19 (89%)"
+
+    # Ensure string columns are clean (optional)
+    string_columns = ["Παίκτης", "Όνομα", "Ομάδα", "Θέση"]
+    for col in string_columns:
+        if col in df.columns:
+            df[col] = df[col].astype("string").str.strip()
+
+    return df
+
+
 def save_stats_csv(
     df: pd.DataFrame, sport: str, competition: str, date_folder_part: str, filename: str
 ):
@@ -203,16 +297,31 @@ def save_stats_csv(
 
 
 def scrape_basketball_stats(
-    driver: WebDriver, wait: WebDriverWait
+    driver: WebDriver, wait: WebDriverWait, match_data: Dict
 ) -> Optional[pd.DataFrame]:
     """Scrapes the player stats table for a basketball match."""
     try:
-        wait.until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, ".playerStatsTable"))
-        )
-
         headers = ["Παίκτης", "Ομάδα"]
         all_rows = []
+        stats_urls = match_data["stats_url"]
+
+        for url in stats_urls:
+            driver.get(url)
+            wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".playerStatsTable"))
+            )
+
+            # Get rows
+            row_elements = driver.find_elements(By.CSS_SELECTOR, ".ui-table__row")
+            for row in row_elements:
+                cells = row.find_elements(By.CSS_SELECTOR, ".playerStatsTable__cell")
+                row_data = [cell.text for cell in cells]
+                row_data[1] = (
+                    match_data["home_team"]
+                    if "home" in url
+                    else match_data["away_team"]
+                )
+                all_rows.append(row_data)
 
         # Get headers
         header_elements = driver.find_elements(By.CSS_SELECTOR, ".ui-table__headerCell")
@@ -221,18 +330,13 @@ def scrape_basketball_stats(
             if title:
                 headers.append(title)
 
-        # Get rows
-        row_elements = driver.find_elements(By.CSS_SELECTOR, ".ui-table__row")
-        for row in row_elements:
-            cells = row.find_elements(By.CSS_SELECTOR, ".playerStatsTable__cell")
-            all_rows.append([cell.text for cell in cells])
-
         if not all_rows:
             print("    ⚠️ No basketball stats rows found on page.")
             return None
 
         df = pd.DataFrame(all_rows, columns=headers)
-        return df
+        df_clean = clean_stats_dataframe(df, sport)
+        return df_clean.sort_values(by="Πόντοι", ascending=False)
 
     except Exception as e:
         print(f"    ❌ Error scraping basketball stats: {e}")
@@ -293,6 +397,7 @@ def scrape_football_stats(
 ) -> Optional[pd.DataFrame]:
     """Scrapes the player stats table for a football match by cycling through Home/Away."""
     try:
+        driver.get(match_data["stats_url"])
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "table")))
 
         headers = []
@@ -334,7 +439,8 @@ def scrape_football_stats(
             return None
 
         df = pd.DataFrame(all_rows, columns=headers)
-        return df.sort_values(by="Αξιολόγηση παίκτη", ascending=False)
+        df_clean = clean_stats_dataframe(df, sport)
+        return df_clean.sort_values(by="Αξιολόγηση παίκτη", ascending=False)
 
     except Exception as e:
         print(f"    ❌ Error scraping football stats: {e}")
@@ -403,8 +509,12 @@ def get_match_list(
                         By.CSS_SELECTOR, ".event__awayParticipant"
                     )
 
-                home_team = re.sub(r"\s*\(.*\)", "", home_team_el.text.rstrip())
-                away_team = re.sub(r"\s*\(.*\)", "", away_team_el.text.rstrip())
+                home_team = re.sub(r"\s*\(.*\)", "", home_team_el.text.rstrip()).split(
+                    "\n"
+                )[0]
+                away_team = re.sub(r"\s*\(.*\)", "", away_team_el.text.rstrip()).split(
+                    "\n"
+                )[0]
 
                 home_score = match_el.find_element(
                     By.CSS_SELECTOR, ".event__score--home"
@@ -420,9 +530,15 @@ def get_match_list(
 
                 # Build stats URL based on sport
                 if sport == "basketball":
-                    stats_url = match_path.replace(
-                        "/?mid=", "/summary/player-stats/overall/?mid="
+                    # Store both home and away URLs
+                    base_stats_path = match_path.replace(
+                        "/?mid=", "/summary/player-stats/team/?mid="
                     )
+                    stats_url = [
+                        base_stats_path.replace("team", "home"),
+                        base_stats_path.replace("team", "away"),
+                    ]
+
                 else:
                     stats_url = match_path.replace(
                         "/?mid=", "/summary/player-stats/top/?mid="
@@ -460,7 +576,6 @@ def scrape_match_stats_in_new_tab(
     """
     Opens a new tab, scrapes stats for a single match, and closes the tab.
     """
-    stats_url = match_data["stats_url"]
     sport = match_data["sport"]
 
     try:
@@ -469,10 +584,8 @@ def scrape_match_stats_in_new_tab(
         driver.switch_to.window(driver.window_handles[-1])
         tab_wait = WebDriverWait(driver, WEBDRIVER_WAIT_TIMEOUT)
 
-        driver.get(stats_url)
-
         if sport == "basketball":
-            df = scrape_basketball_stats(driver, tab_wait)
+            df = scrape_basketball_stats(driver, tab_wait, match_data)
         elif sport == "football":
             df = scrape_football_stats(driver, tab_wait, match_data)
         else:
@@ -482,7 +595,7 @@ def scrape_match_stats_in_new_tab(
         return df
 
     except Exception as e:
-        print(f"    ❌ Error scraping stats from {stats_url}: {e}")
+        print(f"    ❌ Error scraping stats from {match_data["filename"]}: {e}")
         return None
     finally:
         # Close tab and switch back to main window
