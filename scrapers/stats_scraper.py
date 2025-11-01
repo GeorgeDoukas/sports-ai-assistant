@@ -549,7 +549,7 @@ def get_match_list(
                 )
 
                 match_data = {
-                    "filename": f"{home_team}-{away_team}~~~{home_score}-{away_score}.csv",
+                    "filename": f"{home_team} vs {away_team}~~~{home_score}-{away_score}.csv",
                     "home_team": home_team,
                     "away_team": away_team,
                     "date_folder_part": date_folder_part,
