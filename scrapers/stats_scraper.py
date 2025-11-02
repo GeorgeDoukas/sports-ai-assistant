@@ -59,7 +59,6 @@ RAW_STATS_DATA_DIR = Path(os.getenv("RAW_STATS_DATA_DIR", "data/raw/stats"))
 SOURCES_FILE = os.getenv("SOURCES_FILE", ".env")
 
 # Performance
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "4"))
 WEBDRIVER_WAIT_TIMEOUT = int(os.getenv("WEBDRIVER_WAIT_TIMEOUT", "15"))
 PAGE_LOAD_DELAY = float(os.getenv("PAGE_LOAD_DELAY", "2"))
 TAB_SWITCH_DELAY = float(os.getenv("TAB_SWITCH_DELAY", "1"))
@@ -708,10 +707,10 @@ if __name__ == "__main__":
 
     print(
         f"🚀 Starting stats scraping for {len(competition_tasks)} competitions "
-        f"across {len(stats_sources)} sources using {MAX_WORKERS} workers..."
+        f"across {len(stats_sources)} sources"
     )
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    with ThreadPoolExecutor() as executor:
         future_to_task = {
             executor.submit(scrape_single_competition, task): task
             for task in competition_tasks
