@@ -4,7 +4,7 @@ import pathlib
 import re
 from pathlib import Path
 
-from db_models import (
+from storage.db_models import (
     BasketballStats,
     Competition,
     FootballStats,

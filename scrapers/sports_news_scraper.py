@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
-from utils import (
+from scrapers.utils import (
     clean_html_text,
     get_date_path_from_greek_date,
     normalize_and_format_date_to_greek,
@@ -247,11 +247,7 @@ def scrape_source(source: dict):
             print(f"   ⏳ Sleeping {delay:.1f}s...")
             time.sleep(delay)
 
-
-# ===========================================================
-# Entrypoint
-# ===========================================================
-if __name__ == "__main__":
+def scrape_news():
     sources = load_sources()
     if not sources:
         print("❌ No sources found in config file.")
@@ -272,3 +268,9 @@ if __name__ == "__main__":
                 print(f"❌ Source '{source['name']}' encountered an error: {e}")
 
     print("\n✅ All sources scraped successfully.")
+
+# ===========================================================
+# Entrypoint
+# ===========================================================
+if __name__ == "__main__":
+    scrape_news()

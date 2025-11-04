@@ -18,7 +18,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-from utils import (
+from scrapers.utils import (
     get_date_path_from_greek_date,
     normalize_and_format_date_to_greek,
 )
@@ -334,7 +334,7 @@ def scrape_basketball_stats(
             return None
 
         df = pd.DataFrame(all_rows, columns=headers)
-        df_clean = clean_stats_dataframe(df, sport)
+        df_clean = clean_stats_dataframe(df, "basketball")
         return df_clean.sort_values(by="Πόντοι", ascending=False)
 
     except Exception as e:
@@ -438,7 +438,7 @@ def scrape_football_stats(
             return None
 
         df = pd.DataFrame(all_rows, columns=headers)
-        df_clean = clean_stats_dataframe(df, sport)
+        df_clean = clean_stats_dataframe(df, "football")
         return df_clean.sort_values(by="Αξιολόγηση παίκτη", ascending=False)
 
     except Exception as e:
@@ -680,11 +680,7 @@ def scrape_single_competition(task: Tuple[str, str, str]):
         driver.quit()
         print(f"Browser closed for {sport}/{competition}.")
 
-
-# ===========================================================
-# Entrypoint
-# ===========================================================
-if __name__ == "__main__":
+def scrape_stats():
     stats_sources = load_stats_sources()
 
     if not stats_sources:
@@ -727,3 +723,10 @@ if __name__ == "__main__":
 
     print("\n" + "=" * 50)
     print("✅ All stats scraping tasks completed.")
+
+
+# ===========================================================
+# Entrypoint
+# ===========================================================
+if __name__ == "__main__":
+    scrape_stats()
