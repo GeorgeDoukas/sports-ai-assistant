@@ -1,8 +1,12 @@
 import csv
 import datetime
+import os
 import pathlib
 import re
 from pathlib import Path
+
+from dotenv import load_dotenv
+from sqlalchemy import select, text
 
 from storage.db_models import (
     BasketballStats,
@@ -13,10 +17,13 @@ from storage.db_models import (
     Sport,
     Team,
 )
-from sqlalchemy import select, text
 
-RAW_DIR = Path("data/raw/stats")
-LOG_FILE = Path("data/db/processed_stats_files.log")
+load_dotenv()
+
+DB_DIR = Path(os.getenv("DB_DIR", "data/db"))
+
+RAW_STATS_DATA_DIR = Path(os.getenv("RAW_STATS_DATA_DIR", "data/raw/stats"))
+PROCESSED_STATS_FILES_LOG = DB_DIR / "processed_stats_files.log"
 
 _score = re.compile(r"~~~(\d+)-(\d+)\.csv$")
 _months = {
@@ -67,10 +74,12 @@ def _get_or_create(session, model, defaults=None, **kwargs):
 
 def ingest_files(session):
     processed = set()
-    if LOG_FILE.exists():
-        processed = set(LOG_FILE.read_text(encoding="utf-8").splitlines())
+    if PROCESSED_STATS_FILES_LOG.exists():
+        processed = set(
+            PROCESSED_STATS_FILES_LOG.read_text(encoding="utf-8").splitlines()
+        )
 
-    for csv_file in RAW_DIR.rglob("*.csv"):
+    for csv_file in RAW_STATS_DATA_DIR.rglob("*.csv"):
         fpath = str(csv_file)
 
         if fpath in processed:
@@ -78,7 +87,7 @@ def ingest_files(session):
         print(f"Processing: {csv_file}")
         _process_file(session, csv_file)
         processed.add(fpath)
-        LOG_FILE.write_text("\n".join(processed), encoding="utf-8")
+        PROCESSED_STATS_FILES_LOG.write_text("\n".join(processed), encoding="utf-8")
         print(f"Completed: {csv_file}")
 
 
@@ -177,11 +186,14 @@ def _store_basketball(session, match, player, row):
         )
     )
 
+
 def build_aggregates(session):
     print("Building aggregates...")
 
     # Football totals
-    session.execute(text("""
+    session.execute(
+        text(
+            """
         INSERT OR REPLACE INTO football_player_totals
         (player_id, games, rating, shots, xg, touches, touches_box, duels)
         SELECT player_id,
@@ -194,10 +206,14 @@ def build_aggregates(session):
                SUM(duels)
         FROM football_stats
         GROUP BY player_id
-    """))
+    """
+        )
+    )
 
     # Football per game
-    session.execute(text("""
+    session.execute(
+        text(
+            """
         INSERT OR REPLACE INTO football_player_pergame
         (player_id, games, rating, shots, xg, touches, touches_box, duels)
         SELECT player_id,
@@ -210,10 +226,14 @@ def build_aggregates(session):
                AVG(duels)
         FROM football_stats
         GROUP BY player_id
-    """))
+    """
+        )
+    )
 
     # Basketball totals
-    session.execute(text("""
+    session.execute(
+        text(
+            """
         INSERT OR REPLACE INTO basketball_player_totals
         (player_id, games, points, rebounds, assists, steals, blocks, turnovers, minutes)
         SELECT player_id,
@@ -227,10 +247,14 @@ def build_aggregates(session):
                SUM(minutes)
         FROM basketball_stats
         GROUP BY player_id
-    """))
+    """
+        )
+    )
 
     # Basketball per game
-    session.execute(text("""
+    session.execute(
+        text(
+            """
         INSERT OR REPLACE INTO basketball_player_pergame
         (player_id, games, points, rebounds, assists, steals, blocks, turnovers, minutes)
         SELECT player_id,
@@ -244,6 +268,8 @@ def build_aggregates(session):
                AVG(minutes)
         FROM basketball_stats
         GROUP BY player_id
-    """))
+    """
+        )
+    )
 
     print("Aggregates built.")

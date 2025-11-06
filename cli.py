@@ -6,7 +6,7 @@ from pathlib import Path
 
 import dotenv
 from rich.console import Console
-from rich.prompt import Prompt, IntPrompt, Confirm  # For user input
+from rich.prompt import Confirm, IntPrompt, Prompt  # For user input
 from rich.syntax import Syntax  # For syntax highlighting if needed
 from rich.text import Text  # For styled text
 
@@ -15,13 +15,13 @@ console = Console()
 # --- Import your existing modules ---
 # You will need to ensure these modules are importable from this script's location.
 try:
-    from storage.db_store import DBStore
-    from storage.vector_store import VectorStoreManager
-    from llm.process_articles import ArticleProcessor
     from llm.generate_daily_reports import ReportGenerator
     from llm.llm_chat import llm_chat
+    from llm.process_articles import ArticleProcessor
     from scrapers.sports_news_scraper import scrape_news
     from scrapers.stats_scraper import scrape_stats
+    from storage.db_store import DBStore
+    from storage.vector_store import VectorStoreManager
 except ImportError as e:
     console.print(f"[red]❌ Failed to import required modules: {e}[/red]")
     console.print(

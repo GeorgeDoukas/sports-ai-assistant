@@ -18,13 +18,13 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 load_dotenv()
 
 VECTOR_DIR = Path(os.getenv("VECTOR_DIR", "data/vectorstore/faiss"))
-RAW_DIR = Path(os.getenv("RAW_NEWS_DATA_DIR", "data/raw/news"))
+RAW_NEWS_DATA_DIR = Path(os.getenv("RAW_NEWS_DATA_DIR", "data/raw/news"))
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 1000))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 150))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 32))
 
-PROCESSED_FILES_LOG = VECTOR_DIR / "processed_files.log"
+PROCESSED_FILES_LOG = VECTOR_DIR / "processed_news_files.log"
 
 
 class VectorStoreManager:
@@ -63,11 +63,11 @@ class VectorStoreManager:
         new_chunks = []
         cutoff_date = datetime.now() - timedelta(days=days_back)
 
-        if not RAW_DIR.exists():
-            print(f"❌ Raw data directory not found at: {RAW_DIR}")
+        if not RAW_NEWS_DATA_DIR.exists():
+            print(f"❌ Raw data directory not found at: {RAW_NEWS_DATA_DIR}")
             return []
 
-        all_files = list(RAW_DIR.rglob("*.json"))
+        all_files = list(RAW_NEWS_DATA_DIR.rglob("*.json"))
         new_files = [
             f
             for f in all_files
@@ -168,7 +168,7 @@ class VectorStoreManager:
             return
 
         # 1. Get the set of all valid file paths currently on disk
-        available_files = {p for p in RAW_DIR.rglob("*.json") if p.is_file()}
+        available_files = {p for p in RAW_NEWS_DATA_DIR.rglob("*.json") if p.is_file()}
         if not available_files:
             print("⚠️ No raw files found on disk. Clearing the entire vector store.")
             self.clear()
@@ -282,7 +282,7 @@ if __name__ == "__main__":
         manager.clear()
 
     # 1. Sync vector store
-    manager.sync()   
+    manager.sync()
 
     # 2. Create or update the vector store
 
