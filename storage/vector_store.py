@@ -154,11 +154,65 @@ class VectorStoreManager:
         self._save_processed_files(processed_files)
         print("✅ Vector store update complete.")
 
+    def sync(self) -> None:
+        """
+        Synchronizes the vector store and log with available files.
+
+        This function removes entries from the vector store and the processed files
+        log that correspond to files no longer present in the `data/raw/news` directory.
+        """
+        print("🔄 Starting vector store synchronization...")
+        self.load()
+        if not self.vector_store:
+            print("ℹ️ Vector store is empty or not loaded. No sync needed.")
+            return
+
+        # 1. Get the set of all valid file paths currently on disk
+        available_files = {p for p in RAW_DIR.rglob("*.json") if p.is_file()}
+        if not available_files:
+            print("⚠️ No raw files found on disk. Clearing the entire vector store.")
+            self.clear()
+            return
+
+        print(f"ℹ️ Found {len(available_files)} files in the raw data directory.")
+
+        # 2. Identify documents in the vector store whose source files are missing
+        docstore_dict = self.vector_store.docstore._dict
+        ids_to_delete = []
+
+        for doc_id, doc in docstore_dict.items():
+            file_path_str = doc.metadata.get("file_path")
+            if file_path_str and Path(file_path_str) not in available_files:
+                ids_to_delete.append(doc_id)
+
+        # 3. Delete the identified documents from the vector store
+        if not ids_to_delete:
+            print("✅ Vector store is already in sync with the file system.")
+        else:
+            print(f"🔍 Found {len(ids_to_delete)} document chunks to remove.")
+            self.vector_store.delete(ids_to_delete)
+            print("💾 Saving synchronized vector store to disk...")
+            self.vector_store.save_local(str(VECTOR_DIR))
+            print("✅ Unwanted entries removed from vector store.")
+
+        # 4. Synchronize the processed files log
+        processed_files_log = self._load_processed_files()
+        synced_processed_files = processed_files_log.intersection(available_files)
+
+        if len(synced_processed_files) == len(processed_files_log):
+            print("✅ Processed files log is already in sync.")
+        else:
+            removed_count = len(processed_files_log) - len(synced_processed_files)
+            self._save_processed_files(synced_processed_files)
+            print(f"📝 Updated processed files log. Removed {removed_count} entries.")
+
+        print("✅ Synchronization complete.")
+
     def load(self) -> None:
         """Loads the FAISS index from disk."""
         if self.vector_store:
             return
-        if VECTOR_DIR.exists() and any(VECTOR_DIR.iterdir()):  # CORRECTED TYPO
+        if VECTOR_DIR.exists() and any(VECTOR_DIR.iterdir()):
             try:
                 print(f"ℹ️ Loading vector store from {VECTOR_DIR}...")
                 self.vector_store = FAISS.load_local(
@@ -227,7 +281,11 @@ if __name__ == "__main__":
     if args.rebuild:
         manager.clear()
 
-    # 1. Create or update the vector store
+    # 1. Sync vector store
+    manager.sync()   
+
+    # 2. Create or update the vector store
+
     manager.create_or_update(days_back=30)
 
     # 2. Example query
