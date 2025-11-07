@@ -15,9 +15,8 @@ from storage.vector_store import VectorStoreManager
 load_dotenv()
 
 # Directories
-BASE_DIR = Path(__file__).parent
-RAW_DIR = BASE_DIR / os.getenv("RAW_NEWS_DATA_DIR", "data/raw/news")
-REPORTS_BASE_DIR = BASE_DIR / "data" / "reports" / "news"
+RAW_NEWS_DATA_DIR = Path(os.getenv("RAW_NEWS_DATA_DIR", "data/raw/news"))
+REPORTS_BASE_DIR = Path(os.getenv("DAILY_REPORTS_DIR", "data/daily_reports"))
 REPORTS_BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -40,8 +39,7 @@ class ReportGenerator:
         """
         print("🔎 Loading and filtering articles...")
         grouped_articles = defaultdict(list)
-        all_files = list(RAW_DIR.rglob("*.json"))
-
+        all_files = list(RAW_NEWS_DATA_DIR.rglob("*.json"))
         for article_file in all_files:
             try:
                 with open(article_file, "r", encoding="utf-8") as f:
