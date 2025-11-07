@@ -13,7 +13,7 @@ from storage.db_models import Base
 # ===========================================================
 load_dotenv()
 
-DB_DIR = Path(os.getenv("DB_DIR", "data/db"))
+DB_DIR = Path(os.getenv("DB_DIR", "data/storage/db"))
 DB_PATH = DB_DIR / "stats.db"
 PROCESSED_STATS_FILES_LOG = DB_DIR / "processed_stats_files.log"
 

@@ -17,7 +17,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 # ===========================================================
 load_dotenv()
 
-VECTOR_DIR = Path(os.getenv("VECTOR_DIR", "data/vectorstore/faiss"))
+VECTOR_DIR = Path(os.getenv("VECTOR_DIR", "data/storage/vectorstore/faiss"))
 RAW_NEWS_DATA_DIR = Path(os.getenv("RAW_NEWS_DATA_DIR", "data/raw/news"))
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 1000))

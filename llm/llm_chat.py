@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, TypedDict
 
+from dotenv import load_dotenv
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_community.chat_models import ChatOllama
@@ -33,7 +34,9 @@ from storage.db_models import (
 )
 from storage.vector_store import VectorStoreManager
 
-DB_PATH = Path("data/db/stats.db")
+load_dotenv()
+
+DB_PATH = Path(os.getenv("DB_DIR", "data/storage/db"))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 engine = create_engine(f"sqlite:///{DB_PATH}", echo=False, future=True)
@@ -42,6 +45,7 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 console = Console()
 vs_manager = VectorStoreManager()
 db = SessionLocal()
+
 
 # ==================================================
 # 🛠️ TOOL 1: Search Knowledge Base (Articles)
@@ -73,7 +77,7 @@ def query_database_stats(natural_language_query: str) -> str:
     It is best for objective data like points per game, goals, assists, rebounds, ratings, etc.
     Example: 'LeBron James points per game' or 'Messi goals last season'.
     """
-    
+
     try:
         query_lower = natural_language_query.lower()
         player_name_candidate = next(
@@ -117,10 +121,11 @@ def query_database_stats(natural_language_query: str) -> str:
     finally:
         db.close()
 
+
 def setup_agent():
     model = get_llm()
-    current_date=datetime.now().strftime("%Y-%m-%d")
-    language= LANGUAGE,
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    language = (LANGUAGE,)
     prompt = f"""
 You are 'SportSense', a highly knowledgeable and data-driven sports analyst AI. Your goal is to provide insightful, accurate, and up-to-date answers to sports-related questions.
 **Your final answer MUST be in the following language: {language}**
@@ -143,9 +148,8 @@ Begin your thought process below to answer the user's question. Use the tools av
         tools=[search_knowledge_base, query_database_stats],
         checkpointer=InMemorySaver(),
     )
-    
-    return agent
 
+    return agent
 
 
 # ==================================================
@@ -187,7 +191,6 @@ def llm_chat():
                                 border_style="green",
                             )
                         )
-
 
     except KeyboardInterrupt:
         console.print("\n[red]Exited by user.[/red]")

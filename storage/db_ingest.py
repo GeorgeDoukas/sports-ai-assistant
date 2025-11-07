@@ -20,7 +20,7 @@ from storage.db_models import (
 
 load_dotenv()
 
-DB_DIR = Path(os.getenv("DB_DIR", "data/db"))
+DB_DIR = Path(os.getenv("DB_DIR", "data/storage/db"))
 
 RAW_STATS_DATA_DIR = Path(os.getenv("RAW_STATS_DATA_DIR", "data/raw/stats"))
 PROCESSED_STATS_FILES_LOG = DB_DIR / "processed_stats_files.log"
