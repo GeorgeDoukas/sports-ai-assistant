@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Dict, List
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
@@ -48,6 +49,36 @@ class DBStore:
             build_aggregates(session)
             session.commit()
             print("Done.")
+
+    def get_players_by_surname(self, surname: str) -> List[Dict[str, str]]:
+        """
+        Searches for players based on a (potentially ambiguous) surname or partial name.
+        Returns a list of players, their teams, and their sport.
+        """
+        with self.SessionLocal() as session:
+            search_term = f"%{surname}%"
+            players = (
+                session.query(Player)
+                .join(Team)
+                .filter(Player.name.like(search_term))
+                .limit(10)  # Limit for performance
+                .all()
+            )
+
+            results = []
+            for player in players:
+                sport_name = (
+                    player.team.sport.name
+                    if player.team and player.team.sport
+                    else "Unknown"
+                )
+                team_name = player.team.name if player.team else "Unknown"
+
+                results.append(
+                    {"full_name": player.name, "team": team_name, "sport": sport_name}
+                )
+
+            return results
 
     def get_team_last_matches(self, team_name: str, limit: int = 5) -> str:
         """Retrieves the score and opponents for a team's last X matches."""

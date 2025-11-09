@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Dict, List
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
@@ -79,6 +80,33 @@ def query_database_stats(
         return f"An error occurred while querying the database: {type(e).__name__}"
 
 
+# ==================================================
+# TOOL 3: Find Ambiguous Player Names (Disambiguation)
+# ==================================================
+@tool
+def find_ambiguous_players(surname: str) -> str:
+    """
+    Use this tool immediately when the user provides an ambiguous or partial name (e.g., 'Butler', 'Williams')
+    to get a list of matching players, their teams, and sports.
+    The output helps you ask a clarifying question to the user.
+    """
+    results: List[Dict[str, str]] = db_store.get_players_by_surname(surname)
+
+    if not results:
+        return f"No players found with the surname '{surname}' in the database."
+
+    # Format the results for the LLM's consumption/response generation
+    formatted_results = [
+        f"Found the following {len(results)} players matching '{surname}':"
+    ]
+    for i, p in enumerate(results):
+        formatted_results.append(
+            f"{i+1}. **{p['full_name']}** (Team: {p['team']}, Sport: {p['sport']})"
+        )
+
+    return "\n".join(formatted_results)
+
+
 def setup_agent():
     model = get_llm()
     current_date = datetime.now().strftime("%Y-%m-%d")
@@ -86,35 +114,28 @@ def setup_agent():
     prompt = f"""
 You are 'SportSense', a highly knowledgeable and data-driven sports analyst AI. Your goal is to provide insightful, accurate, and up-to-date answers to sports-related questions.
 **Your final answer MUST be in the following language: {language}**
-You have access to two powerful tools to help you:
-1.  `search_knowledge_base`: Use this to get the latest news, expert analysis, commentary, and context on players, teams, and events.
-2.  `query_database_stats`: Use this to get hard, quantitative data and statistics for **players OR teams**.
-    **CRITICAL:** This tool now supports three query scopes, specified by the `scope` argument:
-    1.  `scope='averages'` (Default): For a player's season averages (e.g., points/game, goals/game).
-        - **Arguments**: `entity_name` (Player Name), `metric` (e.g., 'Points', 'Goals', 'all').
-    2.  `scope='team_matches'`: For a team's last match results (score-wise).
-        - **Arguments**: `entity_name` (Team Name), `limit` (number of games, default 5).
-    3.  `scope='player_recent'`: For a player's individual performance stats in their last X games.
-        - **Arguments**: `entity_name` (Player Name), `limit` (number of games, default 5).
+You have access to three powerful tools to help you:
+1.  `search_knowledge_base`: Use this for news, analysis, and context.
+2.  `query_database_stats`: Use this for hard, quantitative data (averages, match history, player recent performance).
+3.  `find_ambiguous_players`: **CRITICAL!** Use this immediately when the user provides an ambiguous or partial name (e.g., "Butler", "Williams", "Messi") to get a list of options.
+
 **Your Strategy:**
-1.  **Analyze the User's Query:** Understand if the user is asking for:
-    - Objective **Averages/Totals** (Use `query_database_stats` with `scope='averages'`).
-    - **Team Match History** (Use `query_database_stats` with `scope='team_matches'`).
-    - **Player Game-by-Game Performance** (Use `query_database_stats` with `scope='player_recent'`).
-    - Subjective analysis/news (Use `search_knowledge_base`).
-2.  **Use Tools Strategically:**
-    - "Πόσους πόντους έχει ο Gilgeous-Alexander S. ανά παιχνίδι;": `query_database_stats(entity_name="Gilgeous-Alexander S.", scope="averages", metric="points")`
-    - "Πώς πήγε η Οκλαχόμα Σίτι Θάντερ στα 3 τελευταία ματς;": `query_database_stats(entity_name="Οκλαχόμα Σίτι Θάντερ", scope="team_matches", limit=3)`
-    - "Πώς έπαιξε ο Harden J. στους 5 τελευταίους αγώνες;": `query_database_stats(entity_name="Harden J.", scope="player_recent", limit=5)`
-3.  **Synthesize, Don't Just Report:** Do not just dump the raw output from the tools. Combine the information into a coherent, well-written answer in Greek.
-4.  **Be Clear:** If you can't find information, say so. Don't make things up.
+1.  **Name Clarification (NEW STEP):** If the user's query contains an ambiguous or partial player name, your FIRST step must be to call `find_ambiguous_players(surname="[surname]")`.
+    - If the tool returns multiple players, you MUST ask the user a **clarifying question** (e.g., "Which Butler are you referring to? Jimmy Butler of the Heat or Malcolm Butler of the Patriots?"). Do NOT try to guess.
+    - If the tool returns exactly one player, or if the name is clearly specific (e.g., "Gilgeous-Alexander S."), proceed with the query using that player's full name.
+2.  **Translate/Normalize (IMPLICIT STEP):** Handle translations or normalization within your thought process if necessary, ensuring the `entity_name` passed to the tools matches the expected format in the Greek database (e.g., use 'Harden J.' not 'James Harden').
+3.  **Use Tools Strategically:**
+    - "How did Butler play?" -> Call `find_ambiguous_players(surname="Butler")`.
+    - "What are Gilgeous-Alexander S. points per game?" -> Call `query_database_stats(entity_name="Gilgeous-Alexander S.", scope="averages", metric="points")`.
+    - "How did Oklahoma City Thunder perform in their last 3 games?" -> Call `query_database_stats(entity_name="Οκλαχόμα Σίτι Θάντερ", scope="team_matches", limit=3)`.
+4.  **Synthesize, Don't Just Report:** Combine information into a coherent, well-written answer in Greek, maintaining the language requested.
 Today's Date is: {current_date}
 Begin your thought process below to answer the user's question. Use the tools available to you.
 """
     agent = create_agent(
         model,
         system_prompt=prompt,
-        tools=[search_knowledge_base, query_database_stats],
+        tools=[search_knowledge_base, query_database_stats, find_ambiguous_players],
         checkpointer=InMemorySaver(),
     )
 
