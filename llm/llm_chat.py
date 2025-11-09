@@ -1,17 +1,7 @@
-import os
-import sys
-import time
-from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, TypedDict
 
 from dotenv import load_dotenv
-from langchain.agents import AgentState, create_agent
-from langchain.agents.middleware import AgentMiddleware
-from langchain_community.chat_models import ChatOllama
-from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.prompts import ChatPromptTemplate
+from langchain.agents import create_agent
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from rich.console import Console
@@ -20,32 +10,16 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.rule import Rule
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from llm.llm_services import LANGUAGE, get_llm
-from storage.db_models import (
-    BasketballPlayerPerGame,
-    Competition,
-    FootballPlayerPerGame,
-    Player,
-    Sport,
-    Team,
-)
+from storage.db_store import DBStore
 from storage.vector_store import VectorStoreManager
 
 load_dotenv()
 
-DB_DIR = Path(os.getenv("DB_DIR", "data/storage/db"))
-DB_PATH = DB_DIR / "stats.db"
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-engine = create_engine(f"sqlite:///{DB_PATH}", echo=False, future=True)
-SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
-
 console = Console()
 vs_manager = VectorStoreManager()
-db = SessionLocal()
+db_store = DBStore()
 
 
 # ==================================================
@@ -72,132 +46,67 @@ def search_knowledge_base(query: str) -> str:
 # TOOL 2: Query Player/Team Stats from DB
 # ==================================================
 @tool
-def query_database_stats(player_name: str, metric: str = "all") -> str:
+def query_database_stats(
+    entity_name: str, scope: str = "averages", metric: str = "all", limit: int = 5
+) -> str:
     """
-    Use this tool to retrieve specific, quantitative statistics for a player from the database.
-    The LLM must extract the exact 'player_name' (e.g., 'Harden J.', 'Messi L.') 
-    and the 'metric' (e.g., 'Points', 'Goals', 'all' for all available stats) from the user's natural language query 
-    and pass them as arguments to this function.
+    Use this tool to retrieve specific statistics from the database for players OR teams.
+
+    Args:
+        entity_name (str): The full name of the Player (e.g., 'Gilgeous-Alexander S.', 'Messi L.') or Team (e.g., 'Οκλαχόμα Σίτι Θάντερ').
+        scope (str): Specifies the type of query. Must be one of:
+            - 'averages' (default): Get a player's season averages (e.g., points/game).
+            - 'team_matches': Get the team's last match results (score-wise).
+            - 'player_recent': Get a player's individual performance stats for their last X games.
+        metric (str): Used only with scope='averages'. The specific stat to look up (e.g., 'Points', 'Goals', 'all').
+        limit (int): Used with scope='team_matches' or 'player_recent'. The number of recent games (X) to look up. Defaults to 5.
     """
     try:
-        with SessionLocal() as db_session:
-            # try:
-            # 1. Search for Player using the name extracted by the LLM
-            player = (
-                db_session.query(Player)
-                .filter(Player.name.like(f"%{player_name}%"))
-                .first()
-            )
+        # 1. Handle Team Match History
+        if scope == "team_matches":
+            return db_store.get_team_last_matches(entity_name, limit)
 
-            if not player:
-                return f"Could not find a player matching '{player_name}' in the database."
+        # 2. Handle Player Recent Performance (Last X Games)
+        elif scope == "player_recent":
+            return db_store.get_player_last_games(entity_name, limit)
+        # 3. Handle Player Averages (Default)
+        elif scope == "averages":
+            return db_store.get_player_averages(entity_name, metric)
 
-            # 2. Determine Sport and Fetch Stats
-            sport_name = (
-                player.team.sport.name.lower()
-                if player.team and player.team.sport
-                else "unknown"
-            )
-            
-            output_lines = []
-
-            # --- BASKETBALL LOGIC ---
-            if "basketball" in sport_name:
-                stats_model = BasketballPlayerPerGame
-                stats = (
-                    db_session.query(stats_model)
-                    .filter(stats_model.player_id == player.id)
-                    .first()
-                )
-                
-                if stats:
-                    output_lines.append(f"🏀 **{player.name}** (Basketball) - Per Game Stats:")
-                    
-                    # Define metric mapping for basketball
-                    metric_map = {
-                        "points": stats.points, "ποντοι": stats.points,
-                        "rebounds": stats.rebounds, "ριμπαουντ": stats.rebounds,
-                        "assists": stats.assists, "ασιστς": stats.assists,
-                        "steals": stats.steals, "κλεψιματα": stats.steals,
-                        "minutes": stats.minutes, "λεπτα": stats.minutes,
-                    }
-
-                    if metric.lower() == "all":
-                        output_lines.append(f"  - Πόντοι (Points): {stats.points or 'N/A'}")
-                        output_lines.append(f"  - Σύνολο ριμπάουντ (Rebounds): {stats.rebounds or 'N/A'}")
-                        output_lines.append(f"  - Ασίστς (Assists): {stats.assists or 'N/A'}")
-                        output_lines.append(f"  - Λεπτά (Minutes): {stats.minutes or 'N/A'}")
-                    elif metric.lower() in metric_map:
-                        value = metric_map[metric.lower()]
-                        output_lines.append(f"  - {metric.capitalize()}: {value or 'N/A'}")
-                    else:
-                        output_lines.append(f"Could not find the specific basketball metric '{metric}'.")
-
-            # --- FOOTBALL LOGIC ---
-            elif "football" in sport_name:
-                # Assuming FootballPlayerPerGame is imported and defined with columns like rating, shots, xg, etc.
-                stats_model = FootballPlayerPerGame
-                stats = (
-                    db_session.query(stats_model)
-                    .filter(stats_model.player_id == player.id)
-                    .first()
-                )
-
-                if stats:
-                    output_lines.append(f"⚽ **{player.name}** (Football) - Per Game Stats:")
-                    
-                    # Define metric mapping for football
-                    metric_map = {
-                        "rating": stats.rating, "βαθμολογια": stats.rating,
-                        "shots": stats.shots, "σουτ": stats.shots,
-                        "xg": stats.xg, 
-                        "touches": stats.touches, "επαφες": stats.touches,
-                        "duels": stats.duels, "μονομαχιες": stats.duels,
-                    }
-                    
-                    if metric.lower() == "all":
-                        output_lines.append(f"  - Βαθμολογία (Rating): {stats.rating or 'N/A'}")
-                        output_lines.append(f"  - Σουτ (Shots): {stats.shots or 'N/A'}")
-                        output_lines.append(f"  - Αναμενόμενα γκολ (xG): {stats.xg or 'N/A'}")
-                        output_lines.append(f"  - Επαφές (Touches): {stats.touches or 'N/A'}")
-                    elif metric.lower() in metric_map:
-                        value = metric_map[metric.lower()]
-                        output_lines.append(f"  - {metric.capitalize()}: {value or 'N/A'}")
-                    else:
-                        output_lines.append(f"Could not find the specific football metric '{metric}'.")
-            
-            # --- FINAL OUTPUT ---
-            if output_lines:
-                # If we found stats for either sport
-                return "\n".join(output_lines)
-            elif player:
-                # Player found, but no per-game stats available for their sport
-                return f"Player '{player.name}' was found, but no specific per-game stats are available in the database for the sport '{sport_name}'. Try searching the knowledge base for news."
-
-            # Should be caught by the first 'if not player' but kept for safety
-            return "Could not find specific stats for the query."
+        return f"Invalid scope '{scope}'. Must be 'averages', 'team_matches', or 'player_recent'."
 
     except Exception as e:
-        # Handle any unexpected database or code errors
-        return f"An error occurred while querying the database for stats: {type(e).__name__}"
+        return f"An error occurred while querying the database: {type(e).__name__}"
+
 
 def setup_agent():
     model = get_llm()
     current_date = datetime.now().strftime("%Y-%m-%d")
-    language = (LANGUAGE,)
+    language = LANGUAGE
     prompt = f"""
 You are 'SportSense', a highly knowledgeable and data-driven sports analyst AI. Your goal is to provide insightful, accurate, and up-to-date answers to sports-related questions.
 **Your final answer MUST be in the following language: {language}**
 You have access to two powerful tools to help you:
 1.  `search_knowledge_base`: Use this to get the latest news, expert analysis, commentary, and context on players, teams, and events.
-2.  `query_database_stats`: Use this to get hard, quantitative data and statistics for **a specific player**. **When calling this tool, you MUST provide the full, correct player name as the 'player_name' argument** (e.g., 'Gilgeous-Alexander S.', 'Harden J.') and the name of the statistic as the 'metric' argument (e.g., 'Points', 'Rebounds', 'Assists'). If the user asks for general stats, use 'all' for the 'metric'.
+2.  `query_database_stats`: Use this to get hard, quantitative data and statistics for **players OR teams**.
+    **CRITICAL:** This tool now supports three query scopes, specified by the `scope` argument:
+    1.  `scope='averages'` (Default): For a player's season averages (e.g., points/game, goals/game).
+        - **Arguments**: `entity_name` (Player Name), `metric` (e.g., 'Points', 'Goals', 'all').
+    2.  `scope='team_matches'`: For a team's last match results (score-wise).
+        - **Arguments**: `entity_name` (Team Name), `limit` (number of games, default 5).
+    3.  `scope='player_recent'`: For a player's individual performance stats in their last X games.
+        - **Arguments**: `entity_name` (Player Name), `limit` (number of games, default 5).
 **Your Strategy:**
-1.  **Analyze the User's Query:** Understand if the user is asking for objective stats (use `query_database_stats`), subjective analysis/news (use `search_knowledge_base`), or a combination of both.
+1.  **Analyze the User's Query:** Understand if the user is asking for:
+    - Objective **Averages/Totals** (Use `query_database_stats` with `scope='averages'`).
+    - **Team Match History** (Use `query_database_stats` with `scope='team_matches'`).
+    - **Player Game-by-Game Performance** (Use `query_database_stats` with `scope='player_recent'`).
+    - Subjective analysis/news (Use `search_knowledge_base`).
 2.  **Use Tools Strategically:**
-    - For questions like "How has Messi been playing for Inter Miami?", you should FIRST `search_knowledge_base` to get recent news and analysis. You might then follow up with `query_database_stats` to fetch his recent stats to support the analysis.
-    - For questions like "What are Gilgeous-Alexander S. points per game?", you should call `query_database_stats(player_name="Gilgeous-Alexander S.", metric="Points")`.
-    - For questions like "Στατιστικά του Harden J.", you should call `query_database_stats(player_name="Harden J.", metric="all")`.
-3.  **Synthesize, Don't Just Report:** Do not just dump the raw output from the tools. Combine the information into a coherent, well-written answer. For example, if the knowledge base says a player is in "great form," support this claim with their recent stats from the database.
+    - "Πόσους πόντους έχει ο Gilgeous-Alexander S. ανά παιχνίδι;": `query_database_stats(entity_name="Gilgeous-Alexander S.", scope="averages", metric="points")`
+    - "Πώς πήγε η Οκλαχόμα Σίτι Θάντερ στα 3 τελευταία ματς;": `query_database_stats(entity_name="Οκλαχόμα Σίτι Θάντερ", scope="team_matches", limit=3)`
+    - "Πώς έπαιξε ο Harden J. στους 5 τελευταίους αγώνες;": `query_database_stats(entity_name="Harden J.", scope="player_recent", limit=5)`
+3.  **Synthesize, Don't Just Report:** Do not just dump the raw output from the tools. Combine the information into a coherent, well-written answer in Greek.
 4.  **Be Clear:** If you can't find information, say so. Don't make things up.
 Today's Date is: {current_date}
 Begin your thought process below to answer the user's question. Use the tools available to you.
@@ -217,7 +126,10 @@ Begin your thought process below to answer the user's question. Use the tools av
 # ==================================================
 def llm_chat():
     console.print(
-        Panel("⚡ Sports Insight Agent: Articles + Stats", border_style="blue")
+        Panel(
+            "⚡ Sports Insight Agent: Articles + Stats ⚡",
+            border_style="blue",
+        )
     )
     agent = setup_agent()
 
