@@ -13,6 +13,7 @@ from rich.prompt import Prompt
 from rich.rule import Rule
 
 from llm.llm_services import LANGUAGE, get_llm
+from llm.process_queries import translate_name as helper_translate_name, improve_vector_query as helper_improve_query
 from storage.db_store import DBStore
 from storage.vector_store import VectorStoreManager
 
@@ -107,6 +108,33 @@ def find_ambiguous_players(surname: str) -> str:
     return "\n".join(formatted_results)
 
 
+# ==================================================
+# TOOL 4: Translate Name (Intermediate Step)
+# ==================================================
+@tool
+def translate_name(text: str, target_lang: str) -> str:
+    """
+    Use this tool to translate a name (e.g., 'LeBron James') or entity to the target language 
+    (obtained from the LANGUAGE environment variable, e.g., 'Greek') when an initial 
+    database query fails, allowing a retry with the translated name.
+    """
+    # Calls the actual LLM-powered helper function
+    return helper_translate_name(text)
+
+
+# ==================================================
+# TOOL 5: Improve Vector Store Query
+# ==================================================
+@tool
+def improve_vector_query(original_query: str) -> str:
+    """
+    Use this to refine a conversational or ambiguous natural language query into a concise, 
+    optimized set of keywords for better retrieval from the knowledge base (Tool 1).
+    Example: 'What is the news on Messi's last game?' -> 'Messi last game news summary'
+    """
+    # Calls the actual LLM-powered helper function
+    return helper_improve_query(original_query)
+
 def setup_agent():
     model = get_llm()
     current_date = datetime.now().strftime("%Y-%m-%d")
@@ -114,28 +142,36 @@ def setup_agent():
     prompt = f"""
 You are 'SportSense', a highly knowledgeable and data-driven sports analyst AI. Your goal is to provide insightful, accurate, and up-to-date answers to sports-related questions.
 **Your final answer MUST be in the following language: {language}**
-You have access to three powerful tools to help you:
+You have access to five powerful tools to help you:
 1.  `search_knowledge_base`: Use this for news, analysis, and context.
 2.  `query_database_stats`: Use this for hard, quantitative data (averages, match history, player recent performance).
-3.  `find_ambiguous_players`: **CRITICAL!** Use this immediately when the user provides an ambiguous or partial name (e.g., "Butler", "Williams", "Messi") to get a list of options.
+3.  `find_ambiguous_players`: **CRITICAL!** Use this immediately when the user provides an ambiguous or partial name to get a list of options.
+4.  `translate_name`: Use this as a **secondary strategy** if a primary database lookup fails, to translate the name to the target language and retry.
+5.  `improve_vector_query`: Use this to refine a conversational query before searching the knowledge base (Tool 1).
 
 **Your Strategy:**
-1.  **Name Clarification (NEW STEP):** If the user's query contains an ambiguous or partial player name, your FIRST step must be to call `find_ambiguous_players(surname="[surname]")`.
-    - If the tool returns multiple players, you MUST ask the user a **clarifying question** (e.g., "Which Butler are you referring to? Jimmy Butler of the Heat or Malcolm Butler of the Patriots?"). Do NOT try to guess.
-    - If the tool returns exactly one player, or if the name is clearly specific (e.g., "Gilgeous-Alexander S."), proceed with the query using that player's full name.
-2.  **Translate/Normalize (IMPLICIT STEP):** Handle translations or normalization within your thought process if necessary, ensuring the `entity_name` passed to the tools matches the expected format in the Greek database (e.g., use 'Harden J.' not 'James Harden').
-3.  **Use Tools Strategically:**
-    - "How did Butler play?" -> Call `find_ambiguous_players(surname="Butler")`.
-    - "What are Gilgeous-Alexander S. points per game?" -> Call `query_database_stats(entity_name="Gilgeous-Alexander S.", scope="averages", metric="points")`.
-    - "How did Oklahoma City Thunder perform in their last 3 games?" -> Call `query_database_stats(entity_name="Οκλαχόμα Σίτι Θάντερ", scope="team_matches", limit=3)`.
-4.  **Synthesize, Don't Just Report:** Combine information into a coherent, well-written answer in Greek, maintaining the language requested.
+1.  **Disambiguation (Name Clarification):** If the user's query contains an ambiguous or partial player name (e.g., 'Butler'), your FIRST step must be to call `find_ambiguous_players(surname="[surname]")`.
+    - If the tool returns multiple players, you MUST ask the user a **clarifying question**. Do NOT guess.
+    - If the tool returns exactly one player, proceed with the query using that player's full name.
+
+2.  **Query Improvement (News/Context):** If the request requires the knowledge base (Tool 1) and the query is conversational or vague, FIRST use `improve_vector_query(original_query)` to optimize the search keywords, and THEN use `search_knowledge_base` with the improved query.
+
+3.  **Database Retrieval with Translation Fallback:**
+    a. Try `query_database_stats` with the entity name as initially given or clarified.
+    b. If the query in step (a) fails (returns "Could not find a player matching..."), use `translate_name(text=original_name)` to get the translated name.
+    c. Retry `query_database_stats` with the translated result from step (b).
+
+4.  **Synthesize, Don't Just Report:** Do not just dump the raw output from the tools. Combine the information into a coherent, well-written answer in Greek, maintaining the language requested.
+
+**Target Language for Output/Translation:** {language}
 Today's Date is: {current_date}
+
 Begin your thought process below to answer the user's question. Use the tools available to you.
 """
     agent = create_agent(
         model,
         system_prompt=prompt,
-        tools=[search_knowledge_base, query_database_stats, find_ambiguous_players],
+        tools=[search_knowledge_base, query_database_stats, find_ambiguous_players, translate_name, improve_vector_query],
         checkpointer=InMemorySaver(),
     )
 
