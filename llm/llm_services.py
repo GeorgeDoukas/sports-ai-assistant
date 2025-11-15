@@ -41,7 +41,7 @@ def get_llm():
         return ChatOpenAI(
             model=LLM_MODEL,
             api_key=os.getenv("OPENAI_API_KEY"),
-            base_url=os.getenv("OPENAI_API_BASE"),
+            base_url=f"{os.getenv("OPENAI_API_BASE").rstrip("/")}/v1",
         )
     elif provider == "ollama":
         return ChatOllama(model=LLM_MODEL)
