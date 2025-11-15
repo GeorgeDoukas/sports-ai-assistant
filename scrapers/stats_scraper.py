@@ -315,6 +315,9 @@ def scrape_basketball_stats(
             for row in row_elements:
                 cells = row.find_elements(By.CSS_SELECTOR, ".playerStatsTable__cell")
                 row_data = [cell.text for cell in cells]
+                href = row.find_element(By.TAG_NAME, "a").get_attribute("href")
+                player_name = href.rstrip("/").split("player/")[1].split("/")[0].replace("-"," ").title()
+                row_data[0] = player_name
                 row_data[1] = (
                     match_data["home_team"]
                     if "home" in url
