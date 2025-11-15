@@ -3,6 +3,7 @@ import json
 import os
 from collections import defaultdict
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from dotenv import load_dotenv
 from langchain_core.output_parsers import StrOutputParser
@@ -19,6 +20,7 @@ RAW_NEWS_DATA_DIR = Path(os.getenv("RAW_NEWS_DATA_DIR", "data/raw/news"))
 REPORTS_BASE_DIR = Path(os.getenv("DAILY_REPORTS_DIR", "data/daily_reports"))
 REPORTS_BASE_DIR.mkdir(parents=True, exist_ok=True)
 
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", 4))
 
 class ReportGenerator:
     """
@@ -28,9 +30,9 @@ class ReportGenerator:
     def __init__(self, args):
         self.args = args
         print(f"ℹ️  Initializing ReportGenerator with task arguments...")
-        self.llm = get_llm()
         self.vs_manager = VectorStoreManager()
         self.workload = self._load_and_filter_articles()
+        print(f"✅ ReportGenerator ready with {MAX_WORKERS} workers.")
 
     def _load_and_filter_articles(self) -> dict:
         """
@@ -63,6 +65,8 @@ class ReportGenerator:
                 if self.args.date and date_folder != self.args.date.replace(" ", "-"):
                     continue
 
+                # Pass the article file path along for robust file fetching in parallel
+                data["file_path"] = str(article_file) 
                 grouped_articles[(sport, comp, date_folder)].append(data)
             except Exception as e:
                 print(f"⚠️ Could not process file {article_file.name}: {e}")
@@ -72,15 +76,15 @@ class ReportGenerator:
         )
         return grouped_articles
 
-    def _generate_markdown_report(self, prompt_template: str, context: dict) -> str:
+    def _generate_markdown_report(self, llm_client, prompt_template: str, context: dict) -> str:
         """Helper function to invoke the LLM chain and return a markdown report."""
         prompt = ChatPromptTemplate.from_template(prompt_template)
-        chain = prompt | self.llm | StrOutputParser()
+        chain = prompt | llm_client | StrOutputParser()
         try:
             context["language"] = LANGUAGE
             return chain.invoke(context)
         except Exception as e:
-            print(f"  ❌ LLM Error: {e}")
+            print(f" ❌ LLM Error: {e}")
             return f"# LLM Generation Error\n\nAn error occurred: {e}"
 
     def _get_content_from_summaries(self, articles: list) -> str:
@@ -98,60 +102,58 @@ class ReportGenerator:
 
     def _get_content_from_vectorstore(self, articles: list) -> str:
         """Fetches and concatenates full article content for the prompt context."""
-        print("  - Fetching full content from source files...")
+        print("  - Fetching full content from source files...")
         full_contents = []
         for article_data in articles:
-            # You should ensure 'file_path' is saved in your JSON metadata during scraping for this to be robust.
+            # We now rely on 'file_path' being added during the _load_and_filter_articles step
             file_path = article_data.get("file_path")
             if file_path:
                 try:
                     with open(file_path, "r", encoding="utf-8") as f:
                         raw_data = json.load(f)
-                        full_contents.append(
-                            raw_data.get("article", {}).get("content", "")
-                        )
+                    full_contents.append(
+                        raw_data.get("article", {}).get("content", "")
+                    )
                 except FileNotFoundError:
                     full_contents.append(
                         article_data.get("article", {}).get("content", "")
-                    )  # Fallback
+                    ) # Fallback
             else:
                 full_contents.append(article_data.get("article", {}).get("content", ""))
         return "\n\n--- ARTICLE SEPARATOR ---\n\n".join(filter(None, full_contents))
 
-    def run(self):
-        """
-        Main execution loop that generates reports based on the loaded workload.
-        """
-        if not self.workload:
-            print("ℹ️ No articles match the specified criteria. Nothing to do.")
-            return
+    def _process_report_group(self, group_key_and_articles: tuple):
+        """Worker function that processes all reports for a single (sport, comp, date) group."""
+        (sport, comp, date), articles = group_key_and_articles
+        
+        # Initialize LLM client for this thread/worker.
+        llm_client = get_llm()
+        
+        # Define output directory for this specific group
+        output_dir = REPORTS_BASE_DIR / sport / comp / date
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # --- 1. Generate Daily Report for Each Source (still sequential inside the worker) ---
+        articles_by_source = defaultdict(list)
+        for article in articles:
+            articles_by_source[article.get("source", "Unknown")].append(article)
 
-        for (sport, comp, date), articles in self.workload.items():
-            # Define output directory for this specific group
-            output_dir = REPORTS_BASE_DIR / sport / comp / date
-            output_dir.mkdir(parents=True, exist_ok=True)
+        for source, source_articles in articles_by_source.items():
+            report_path = output_dir / f"daily_report_{source}.md"
+            # Smart Skip Logic: Skip if using --all and file exists.
+            if self.args.all and report_path.exists():
+                print(f"⏭️ Worker for {date} skipping existing daily report: {report_path.name}")
+                continue
 
-            # --- 1. Generate Daily Report for Each Source ---
-            articles_by_source = defaultdict(list)
-            for article in articles:
-                articles_by_source[article.get("source", "Unknown")].append(article)
+            print(f"📅 Worker for {date} generating daily report for {source}...")
+            content_for_llm = (
+                self._get_content_from_summaries(source_articles)
+                if self.args.method == "summaries"
+                else self._get_content_from_vectorstore(source_articles)
+            )
 
-            for source, source_articles in articles_by_source.items():
-                report_path = output_dir / f"daily_report_{source}.md"
-                # Smart Skip Logic: Skip if using --all and file exists.
-                if self.args.all and report_path.exists():
-                    print(f"⏭️ Skipping existing daily report: {report_path.name}")
-                    continue
-
-                print(f"📅 Generating daily report for {source} on {date}...")
-                content_for_llm = (
-                    self._get_content_from_summaries(source_articles)
-                    if self.args.method == "summaries"
-                    else self._get_content_from_vectorstore(source_articles)
-                )
-
-                # <<< --- IMPROVED PROMPT 1: Daily Source Report --- >>>
-                prompt_template = """
+            # <<< --- PROMPT 1: Daily Source Report --- >>>
+            prompt_template = """
                 You are an elite sports journalist and editor. Your entire response MUST be in {language}.
                 Your task is to compile a daily digest for **{date}** from the news source **{source}**.
                 Your task is to read the following `Provided Context` and produce a final, verified, and comprehensive summary.
@@ -172,31 +174,32 @@ class ReportGenerator:
                 **Provided Context from {source}:**
                 ```{context}```
                 """
-                report_content = self._generate_markdown_report(
-                    prompt_template,
-                    {"date": date, "source": source, "context": content_for_llm},
-                )
-                with open(report_path, "w", encoding="utf-8") as f:
-                    f.write(report_content)
-                print(f"  ✅ Saved daily report: {report_path.name}")
-
-            # --- 2. Generate Combined Report for the Date ---
-            combined_report_path = output_dir / "daily_summary_report.md"
-            if self.args.all and combined_report_path.exists():
-                print(
-                    f"⏭️ Skipping existing combined report: {combined_report_path.name}"
-                )
-                continue
-
-            print(f"📈 Generating combined summary for {comp} on {date}...")
-            content_for_llm = (
-                self._get_content_from_summaries(articles)
-                if self.args.method == "summaries"
-                else self._get_content_from_vectorstore(articles)
+            report_content = self._generate_markdown_report(
+                llm_client,
+                prompt_template,
+                {"date": date, "source": source, "context": content_for_llm},
             )
+            with open(report_path, "w", encoding="utf-8") as f:
+                f.write(report_content)
+            print(f"  ✅ Worker for {date} saved daily report: {report_path.name}")
 
-            # <<< --- IMPROVED PROMPT 2: Combined Competition Report --- >>>
-            prompt_template = """
+        # --- 2. Generate Combined Report for the Date ---
+        combined_report_path = output_dir / "daily_summary_report.md"
+        if self.args.all and combined_report_path.exists():
+            print(
+                f"⏭️ Worker for {date} skipping existing combined report: {combined_report_path.name}"
+            )
+            return
+
+        print(f"📈 Worker for {date} generating combined summary for {comp}...")
+        content_for_llm = (
+            self._get_content_from_summaries(articles)
+            if self.args.method == "summaries"
+            else self._get_content_from_vectorstore(articles)
+        )
+
+        # <<< --- PROMPT 2: Combined Competition Report --- >>>
+        prompt_template = """
             You are a senior sports analyst, writing in {language}. Your task is to create a single, high-level summary for the **{competition}** competition on **{date}**.
             You will be given context from multiple news sources. Your goal is to synthesize them into a single, cohesive narrative in **Markdown format**.
 
@@ -213,14 +216,34 @@ class ReportGenerator:
             **Provided Context from all sources:**
             ```{context}```
             """
-            report_content = self._generate_markdown_report(
-                prompt_template,
-                {"date": date, "competition": comp, "context": content_for_llm},
-            )
-            with open(combined_report_path, "w", encoding="utf-8") as f:
-                f.write(report_content)
-            print(f"  ✅ Saved combined report: {combined_report_path.name}")
+        report_content = self._generate_markdown_report(
+            llm_client,
+            prompt_template,
+            {"date": date, "competition": comp, "context": content_for_llm},
+        )
+        with open(combined_report_path, "w", encoding="utf-8") as f:
+            f.write(report_content)
+        print(f"  ✅ Worker for {date} saved combined report: {combined_report_path.name}")
 
+    def run(self):
+        """
+        Main execution loop that generates reports based on the loaded workload, now in parallel.
+        """
+        if not self.workload:
+            print("ℹ️ No articles match the specified criteria. Nothing to do.")
+            return
+
+        print(f"\n--- Starting Parallel Report Generation with {MAX_WORKERS} workers ---")
+        
+        # Convert workload dict_items to a list of tuples for map function
+        workload_list = list(self.workload.items()) 
+        
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            # executor.map will distribute the workload_list items (the groups)
+            # to the _process_report_group worker function.
+            executor.map(self._process_report_group, workload_list)
+
+        print(f"\n✅ All parallel generation tasks complete.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
