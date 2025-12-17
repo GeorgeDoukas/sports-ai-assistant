@@ -286,6 +286,303 @@ class DBStore:
 
             return f"Averages are not supported for the sport '{sport_name}'."
 
+    def _get_basketball_key_players(
+        self, team_id: int, limit: int
+    ) -> List[Dict]:
+        """Helper to get top basketball players by points."""
+        with self.SessionLocal() as session:
+            players = session.query(Player).filter(Player.team_id == team_id).all()
+            player_stats = []
+
+            for player in players:
+                stats = (
+                    session.query(BasketballPlayerPerGame)
+                    .filter(BasketballPlayerPerGame.player_id == player.id)
+                    .first()
+                )
+                if stats and stats.points:
+                    player_stats.append(
+                        {
+                            "name": player.name,
+                            "points": stats.points or 0,
+                            "rebounds": stats.rebounds or 0,
+                            "assists": stats.assists or 0,
+                            "steals": stats.steals or 0,
+                        }
+                    )
+
+            player_stats.sort(key=lambda x: x["points"], reverse=True)
+            return player_stats[:limit]
+
+    def _get_football_key_players(
+        self, team_id: int, limit: int
+    ) -> List[Dict]:
+        """Helper to get top football players by rating."""
+        with self.SessionLocal() as session:
+            players = session.query(Player).filter(Player.team_id == team_id).all()
+            player_stats = []
+
+            for player in players:
+                stats = (
+                    session.query(FootballPlayerPerGame)
+                    .filter(FootballPlayerPerGame.player_id == player.id)
+                    .first()
+                )
+                if stats and stats.rating:
+                    player_stats.append(
+                        {
+                            "name": player.name,
+                            "rating": stats.rating or 0,
+                            "shots": stats.shots or 0,
+                            "xg": stats.xg or 0,
+                            "duels": stats.duels or 0,
+                        }
+                    )
+
+            player_stats.sort(key=lambda x: x["rating"], reverse=True)
+            return player_stats[:limit]
+
+    def get_team_key_players(self, team_name: str, limit: int = 5) -> str:
+        """
+        Retrieves the top scorers/contributors from a team based on season averages.
+        Returns player names with their key stats.
+        """
+        with self.SessionLocal() as session:
+            # 1. Find the Team
+            team = session.query(Team).filter(Team.name.like(f"%{team_name}%")).first()
+            if not team:
+                return f"Could not find a team matching '{team_name}'."
+
+            sport_name = team.sport.name.lower() if team.sport else "unknown"
+
+            # 2. Get all players from the team
+            players = session.query(Player).filter(Player.team_id == team.id).all()
+            if not players:
+                return f"No players found for team '{team.name}'."
+
+            results = []
+
+            if "basketball" in sport_name:
+                player_stats = self._get_basketball_key_players(team.id, limit)
+                results = [f"🏀 **Top Players for {team.name}:**"]
+                for i, p in enumerate(player_stats, 1):
+                    results.append(
+                        f"{i}. **{p['name']}** - Πόντοι: {p['points']}, Ριμπάουντ: {p['rebounds']}, Ασίστ: {p['assists']}"
+                    )
+
+            elif "football" in sport_name:
+                player_stats = self._get_football_key_players(team.id, limit)
+                results = [f"⚽ **Top Players for {team.name}:**"]
+                for i, p in enumerate(player_stats, 1):
+                    results.append(
+                        f"{i}. **{p['name']}** - Βαθμολογία: {p['rating']}, Σουτ: {p['shots']}, xG: {p['xg']}"
+                    )
+            else:
+                return f"Sport '{sport_name}' is not supported for key players analysis."
+
+            if not results or len(results) == 1:
+                return f"No player statistics available for {team.name}."
+
+            return "\n".join(results)
+
+    def get_upcoming_matches(self, team1_name: str, team2_name: str) -> str:
+        """
+        Searches for upcoming matches between two teams in the database.
+        Returns match details if found.
+        """
+        with self.SessionLocal() as session:
+            # 1. Find both teams
+            team1 = session.query(Team).filter(Team.name.like(f"%{team1_name}%")).first()
+            team2 = session.query(Team).filter(Team.name.like(f"%{team2_name}%")).first()
+
+            if not team1:
+                return f"Could not find team '{team1_name}'."
+            if not team2:
+                return f"Could not find team '{team2_name}'."
+
+            # 2. Search for matches between these teams (in both directions)
+            matches = (
+                session.query(Match)
+                .filter(
+                    (
+                        (Match.home_team_id == team1.id)
+                        & (Match.away_team_id == team2.id)
+                    )
+                    | (
+                        (Match.home_team_id == team2.id)
+                        & (Match.away_team_id == team1.id)
+                    )
+                )
+                .order_by(Match.date.desc())
+                .limit(10)
+                .all()
+            )
+
+            if not matches:
+                return f"No matches found between {team1.name} and {team2.name}."
+
+            results = [
+                f"📋 **Matches between {team1.name} and {team2.name}:**"
+            ]
+            for match in matches:
+                home_team = (
+                    session.query(Team).filter(Team.id == match.home_team_id).first()
+                )
+                away_team = (
+                    session.query(Team).filter(Team.id == match.away_team_id).first()
+                )
+                results.append(
+                    f" - {match.date.strftime('%Y-%m-%d')}: {home_team.name} vs {away_team.name} ({match.home_score}-{match.away_score})"
+                )
+
+            return "\n".join(results)
+
+    def _get_h2h_basketball_stats(
+        self, team1_id: int, team2_id: int, team1_name: str, team2_name: str
+    ) -> List[str]:
+        """Helper to get basketball head-to-head player stats."""
+        with self.SessionLocal() as session:
+            results = []
+
+            # Get top scorers from each team
+            team1_players = session.query(Player).filter(
+                Player.team_id == team1_id
+            ).all()
+            team2_players = session.query(Player).filter(
+                Player.team_id == team2_id
+            ).all()
+
+            team1_stats = []
+            for player in team1_players:
+                stats = (
+                    session.query(BasketballPlayerPerGame)
+                    .filter(BasketballPlayerPerGame.player_id == player.id)
+                    .first()
+                )
+                if stats and stats.points:
+                    team1_stats.append((player.name, stats))
+
+            team1_stats.sort(key=lambda x: x[1].points or 0, reverse=True)
+
+            team2_stats = []
+            for player in team2_players:
+                stats = (
+                    session.query(BasketballPlayerPerGame)
+                    .filter(BasketballPlayerPerGame.player_id == player.id)
+                    .first()
+                )
+                if stats and stats.points:
+                    team2_stats.append((player.name, stats))
+
+            team2_stats.sort(key=lambda x: x[1].points or 0, reverse=True)
+
+            results.append(f"**{team1_name} - Top Scorers:**")
+            for i, (name, stats) in enumerate(team1_stats[:3], 1):
+                results.append(
+                    f"  {i}. {name}: {stats.points} PPG, {stats.assists} APG, {stats.rebounds} RPG"
+                )
+
+            results.append(f"\n**{team2_name} - Top Scorers:**")
+            for i, (name, stats) in enumerate(team2_stats[:3], 1):
+                results.append(
+                    f"  {i}. {name}: {stats.points} PPG, {stats.assists} APG, {stats.rebounds} RPG"
+                )
+
+            return results
+
+    def _get_h2h_football_stats(
+        self, team1_id: int, team2_id: int, team1_name: str, team2_name: str
+    ) -> List[str]:
+        """Helper to get football head-to-head player stats."""
+        with self.SessionLocal() as session:
+            results = []
+
+            # Get top rated players from each team
+            team1_players = session.query(Player).filter(
+                Player.team_id == team1_id
+            ).all()
+            team2_players = session.query(Player).filter(
+                Player.team_id == team2_id
+            ).all()
+
+            team1_stats = []
+            for player in team1_players:
+                stats = (
+                    session.query(FootballPlayerPerGame)
+                    .filter(FootballPlayerPerGame.player_id == player.id)
+                    .first()
+                )
+                if stats and stats.rating:
+                    team1_stats.append((player.name, stats))
+
+            team1_stats.sort(key=lambda x: x[1].rating or 0, reverse=True)
+
+            team2_stats = []
+            for player in team2_players:
+                stats = (
+                    session.query(FootballPlayerPerGame)
+                    .filter(FootballPlayerPerGame.player_id == player.id)
+                    .first()
+                )
+                if stats and stats.rating:
+                    team2_stats.append((player.name, stats))
+
+            team2_stats.sort(key=lambda x: x[1].rating or 0, reverse=True)
+
+            results.append(f"**{team1_name} - Top Rated Players:**")
+            for i, (name, stats) in enumerate(team1_stats[:3], 1):
+                results.append(
+                    f"  {i}. {name}: Rating {stats.rating}, {stats.shots} shots, {stats.xg} xG"
+                )
+
+            results.append(f"\n**{team2_name} - Top Rated Players:**")
+            for i, (name, stats) in enumerate(team2_stats[:3], 1):
+                results.append(
+                    f"  {i}. {name}: Rating {stats.rating}, {stats.shots} shots, {stats.xg} xG"
+                )
+
+            return results
+
+    def get_head_to_head_player_stats(
+        self, team1_name: str, team2_name: str, sport: str = "basketball"
+    ) -> str:
+        """
+        Compares key players from two opposing teams to help predict key players for upcoming match.
+        Returns comparison of top players from each team.
+        """
+        with self.SessionLocal() as session:
+            # 1. Find both teams
+            team1 = session.query(Team).filter(Team.name.like(f"%{team1_name}%")).first()
+            team2 = session.query(Team).filter(Team.name.like(f"%{team2_name}%")).first()
+
+            if not team1:
+                return f"Could not find team '{team1_name}'."
+            if not team2:
+                return f"Could not find team '{team2_name}'."
+
+            sport_name = team1.sport.name.lower() if team1.sport else sport.lower()
+
+            results = [
+                f"⚔️ **Key Players Comparison: {team1.name} vs {team2.name}**\n"
+            ]
+
+            if "basketball" in sport_name:
+                h2h_results = self._get_h2h_basketball_stats(
+                    team1.id, team2.id, team1.name, team2.name
+                )
+                results.extend(h2h_results)
+
+            elif "football" in sport_name:
+                h2h_results = self._get_h2h_football_stats(
+                    team1.id, team2.id, team1.name, team2.name
+                )
+                results.extend(h2h_results)
+
+            else:
+                return f"Sport '{sport_name}' is not supported for comparison."
+
+            return "\n".join(results)
+
 
 if __name__ == "__main__":
     store = DBStore()

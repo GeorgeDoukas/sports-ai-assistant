@@ -13,7 +13,10 @@ from rich.prompt import Prompt
 from rich.rule import Rule
 
 from llm.llm_services import LANGUAGE, get_llm
-from llm.process_queries import translate_name as helper_translate_name, improve_vector_query as helper_improve_query
+from llm.process_queries import (
+    translate_name as helper_translate_name,
+    improve_vector_query as helper_improve_query,
+)
 from storage.db_store import DBStore
 from storage.vector_store import VectorStoreManager
 
@@ -89,7 +92,7 @@ def find_ambiguous_players(surname: str) -> str:
     """
     Use this tool immediately when the user provides an ambiguous or partial name (e.g., 'Butler', 'Williams')
     to get a list of matching players, their teams, and sports.
-    The output helps you ask a clarifying question to the user.
+    The output helps you ask a clarifying question to the user in the format: "Player Name (Team Name)".
     """
     results: List[Dict[str, str]] = db_store.get_players_by_surname(surname)
 
@@ -114,8 +117,8 @@ def find_ambiguous_players(surname: str) -> str:
 @tool
 def translate_name(text: str, target_lang: str) -> str:
     """
-    Use this tool to translate a name (e.g., 'LeBron James') or entity to the target language 
-    (obtained from the LANGUAGE environment variable, e.g., 'Greek') when an initial 
+    Use this tool to translate a name (e.g., 'LeBron James') or entity to the target language
+    (obtained from the LANGUAGE environment variable, e.g., 'Greek') when an initial
     database query fails, allowing a retry with the translated name.
     """
     # Calls the actual LLM-powered helper function
@@ -128,12 +131,79 @@ def translate_name(text: str, target_lang: str) -> str:
 @tool
 def improve_vector_query(original_query: str) -> str:
     """
-    Use this to refine a conversational or ambiguous natural language query into a concise, 
+    Use this to refine a conversational or ambiguous natural language query into a concise,
     optimized set of keywords for better retrieval from the knowledge base (Tool 1).
     Example: 'What is the news on Messi's last game?' -> 'Messi last game news summary'
     """
     # Calls the actual LLM-powered helper function
     return helper_improve_query(original_query)
+
+
+# ==================================================
+# TOOL 6: Get Team Key Players
+# ==================================================
+@tool
+def get_team_key_players(team_name: str, limit: int = 5) -> str:
+    """
+    Retrieves the top scorers/contributors from a specific team based on season averages.
+    Use this to identify the most important players on a team.
+    
+    Args:
+        team_name (str): The name of the team (e.g., 'Panathinaikos', 'Dubai').
+        limit (int): Number of top players to return (default: 5).
+    
+    Returns:
+        A formatted list of top players with their key stats.
+    """
+    try:
+        return db_store.get_team_key_players(team_name, limit)
+    except Exception as e:
+        return f"Error retrieving key players for {team_name}: {str(e)}"
+
+
+# ==================================================
+# TOOL 7: Get Head-to-Head Player Comparison
+# ==================================================
+@tool
+def get_head_to_head_player_stats(team1_name: str, team2_name: str) -> str:
+    """
+    Compares key players from two opposing teams side-by-side.
+    Use this to predict which players will likely be key factors in an upcoming match.
+    
+    Args:
+        team1_name (str): The name of the first team (e.g., 'Panathinaikos').
+        team2_name (str): The name of the second team (e.g., 'Dubai').
+    
+    Returns:
+        A comparison of top scorers/rated players from each team with their stats.
+    """
+    try:
+        return db_store.get_head_to_head_player_stats(team1_name, team2_name)
+    except Exception as e:
+        return f"Error comparing players between {team1_name} and {team2_name}: {str(e)}"
+
+
+# ==================================================
+# TOOL 8: Get Match History Between Teams
+# ==================================================
+@tool
+def get_upcoming_matches(team1_name: str, team2_name: str) -> str:
+    """
+    Retrieves the match history between two teams to understand their competitive dynamics.
+    Use this to see past matchups and recent form.
+    
+    Args:
+        team1_name (str): The name of the first team (e.g., 'Panathinaikos').
+        team2_name (str): The name of the second team (e.g., 'Dubai').
+    
+    Returns:
+        A list of recent matches between the two teams with dates and scores.
+    """
+    try:
+        return db_store.get_upcoming_matches(team1_name, team2_name)
+    except Exception as e:
+        return f"Error retrieving matches between {team1_name} and {team2_name}: {str(e)}"
+
 
 def setup_agent():
     model = get_llm()
@@ -142,28 +212,40 @@ def setup_agent():
     prompt = f"""
 You are 'SportSense', a highly knowledgeable and data-driven sports analyst AI. Your goal is to provide insightful, accurate, and up-to-date answers to sports-related questions.
 **Your final answer MUST be in the following language: {language}**
-You have access to five powerful tools to help you:
+You have access to eight powerful tools to help you:
 1.  `search_knowledge_base`: Use this for news, analysis, and context.
 2.  `query_database_stats`: Use this for hard, quantitative data (averages, match history, player recent performance).
 3.  `find_ambiguous_players`: **CRITICAL!** Use this immediately when the user provides an ambiguous or partial name to get a list of options.
 4.  `translate_name`: Use this as a **secondary strategy** if a primary database lookup fails, to translate the name to the target language and retry.
 5.  `improve_vector_query`: Use this to refine a conversational query before searching the knowledge base (Tool 1).
+6.  `get_team_key_players`: Use this to identify the top scorers/contributors on a specific team.
+7.  `get_head_to_head_player_stats`: Use this to compare key players between two opposing teams - **ESSENTIAL for predicting key players in upcoming matches**.
+8.  `get_upcoming_matches`: Use this to see the match history between two teams.
 
-**Your Strategy:**
-1.  **Disambiguation (Name Clarification):** If the user's query contains an ambiguous or partial player name (e.g., 'Butler'), your FIRST step must be to call `find_ambiguous_players(surname="[surname]")`.
-    - If the tool returns multiple players, you MUST ask the user a **clarifying question**. Do NOT guess.
-    - If the tool returns exactly one player, proceed with the query using that player's full name.
+**Your Strategy for "Key Players" Predictions:**
 
+When a user asks about key players in an upcoming match between two teams (e.g., "Which players will be key in the Panathinaikos vs Dubai match?"):
+1. **Step 1 - Get Team Rosters:** Call `get_team_key_players()` for BOTH teams to understand their top performers.
+2. **Step 2 - Compare Head-to-Head:** Call `get_head_to_head_player_stats()` with both team names to see the matchup dynamics.
+3. **Step 3 - Add Context:** Use `search_knowledge_base()` to find recent news about injuries, form, or special matchups.
+4. **Step 4 - Synthesize:** Combine the stats and news into a coherent analysis of which players are likely to be decisive.
+
+**Your General Strategy:**
+1.  **Disambiguation/Clarification:**
+    a. **MANDATORY CLARIFICATION:** If the user's query contains an ambiguous player name (e.g., 'Bryant'), you **MUST** call `find_ambiguous_players(surname="[surname]")`. If the tool returns multiple players, you **MUST STOP** and ask the user a clarifying question using the exact format provided by the tool, including the team name (e.g., "Which player are you asking about? Please respond with the exact name and team, like: \"Bryant T.\" (Κλίβελαντ Καβαλίερς)"). Do NOT guess or proceed.
+    b. **DIRECT LOOKUP:** If the user's input is a direct clarification (e.g., "Bryant J. (Boston Celtics)") OR the tool returns exactly one player, extract the Player Name and Team Name (if provided) and proceed to database query (Step 3a), recalling the original request's metrics.
+    
 2.  **Query Improvement (News/Context):** If the request requires the knowledge base (Tool 1) and the query is conversational or vague, FIRST use `improve_vector_query(original_query)` to optimize the search keywords, and THEN use `search_knowledge_base` with the improved query.
 
 3.  **Database Retrieval with Translation Fallback:**
-    a. Try `query_database_stats` with the entity name as initially given or clarified.
-    b. If the query in step (a) fails (returns "Could not find a player matching..."), use `translate_name(text=original_name)` to get the translated name.
-    c. Retry `query_database_stats` with the translated result from step (b).
+    a. **Attempt 1 (Direct/English/Greek):** Try `query_database_stats` with the full entity name and the **exact team name** from the database (or the user's clarification).
+    b. **Fallback:** If Attempt 1 fails (returns "Could not find a player matching..."), use `translate_name(text=original_name)` to get the {language} version.
+    c. **Attempt 2 (Translated):** Retry `query_database_stats` with the translated name and the **original team name**.
+    
+4.  **Synthesize, Don't Just Report:** Combine information into a coherent, well-written answer in **{language}**.
 
-4.  **Synthesize, Don't Just Report:** Do not just dump the raw output from the tools. Combine the information into a coherent, well-written answer in Greek, maintaining the language requested.
-
-**Target Language for Output/Translation:** {language}
+**CRITICAL RULE:** **NEVER** hallucinate names. Only use names provided by the user or validated by tool output.
+**TEAM NAMING CONVENTION:** Always use team names as they appear in the database (assumed to be in {language}, e.g., 'Κλίβελαντ Καβαλίερς').
 Today's Date is: {current_date}
 
 Begin your thought process below to answer the user's question. Use the tools available to you.
@@ -171,11 +253,21 @@ Begin your thought process below to answer the user's question. Use the tools av
     agent = create_agent(
         model,
         system_prompt=prompt,
-        tools=[search_knowledge_base, query_database_stats, find_ambiguous_players, translate_name, improve_vector_query],
+        tools=[
+            search_knowledge_base,
+            query_database_stats,
+            find_ambiguous_players,
+            translate_name,
+            improve_vector_query,
+            get_team_key_players,
+            get_head_to_head_player_stats,
+            get_upcoming_matches,
+        ],
         checkpointer=InMemorySaver(),
     )
 
     return agent
+
 
 
 # ==================================================
